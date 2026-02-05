@@ -1,4 +1,15 @@
-# React + TypeScript + Vite
+# React + TypeScript + Vite Frontend
+
+## To run it locally
+
+### 1. Install dependencies
+Run the command `npm i`
+
+### 2. Run the frontend
+Run the command `npm run dev`
+
+
+---
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 

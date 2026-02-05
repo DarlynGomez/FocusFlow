@@ -15,7 +15,25 @@ FocusFlow is built to solve that exact moment by being:
 
 ---
 
-## How to Run Locally
+## How to Run Locally as a Webapp
+
+### 1. Clone the repository
+```bash
+git clone https://github.com/DarlynGomez/FocusFlow
+cd FocusFlow
+````
+
+### 2. Run Backend
+
+Navigate to the backend directory for instruction to run it
+
+### 3. Run Frontend
+
+Navigate to the frontend directory for instruction to run it
+
+---
+
+## How to Run Locally Streamlit
 
 ### 1. Clone the repository
 ```bash
