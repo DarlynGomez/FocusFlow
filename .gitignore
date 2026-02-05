@@ -9,6 +9,5 @@ env/
 backend/.env
 frontend/.env
 .python-version
-*/
 node_modules
 dist/
