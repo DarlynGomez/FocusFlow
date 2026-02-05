@@ -1,0 +1,9 @@
+# Lib to install as of now based on Gemini
+
+fastapi 
+uvicorn 
+python-multipart 
+pymupdf 
+langchain 
+langchain-google-genai 
+python-dotenv
