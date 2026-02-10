@@ -2,7 +2,7 @@
 
 ## To run it locally
 
-### 1. Install dependencies
+### 1. Install all the dependencies
 Run the command `npm i`
 
 ### 2. Run the frontend
