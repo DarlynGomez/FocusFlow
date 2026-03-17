@@ -9,7 +9,10 @@ app = FastAPI(title="FocusFlow API")
 
 # Configure CORS
 origins = [
-    "http://localhost:5173",  # For our frontend
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    "http://localhost:5176",
 ]
 
 app.add_middleware(
