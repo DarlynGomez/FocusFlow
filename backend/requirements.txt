@@ -7,3 +7,5 @@ pymupdf
 langchain 
 langchain-google-genai 
 python-dotenv
+llama-parse
+nest-asyncio
