@@ -13,7 +13,7 @@ interface GuidanceOptionProps {
   onClick: () => void;
 }
 
-export default function GuidanceOption({ id, title, description, selected, onClick }: GuidanceOptionProps) {
+export default function GuidanceOption({ id: _id, title, description, selected, onClick }: GuidanceOptionProps) {
   return (
     <div
       onClick={onClick}
