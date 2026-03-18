@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { FileText, Loader2, AlertTriangle } from "lucide-react";
 import Header from "./Header";
 import GuidanceOption from "./GuidanceOption";
@@ -23,6 +24,7 @@ interface ParsedDocument {
 }
 
 export default function UploadSetupView() {
+  const navigate = useNavigate();
   const [guidanceLevel, setGuidanceLevel] = useState("medium");
   const [file, setFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -78,10 +80,8 @@ export default function UploadSetupView() {
         setBackendWarning(data.warning_message);
       }
 
-      // Transition to reading view here once it is built
-      // To be done soone
-      console.log("Parsed document ready:", data);
-      console.log("Guidance level selected:", guidanceLevel);
+      // Navigate to reading view with parsed data
+      navigate("/reading", { state: { document: data, guidanceLevel } });
     } catch (error) {
       const message =
         error instanceof Error
