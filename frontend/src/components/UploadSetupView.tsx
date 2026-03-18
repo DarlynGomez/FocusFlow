@@ -54,13 +54,12 @@ export default function UploadSetupView() {
     formData.append("guidance_level", guidanceLevel);
 
     try {
-      const response = await fetch(
-        "http://localhost:8000/api/documents/upload",
-        {
-          method: "POST",
-          body: formData,
-        }
-      );
+      const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
+      const response = await fetch(`${BASE_URL}/api/documents/upload`, {
+        method: "POST",
+        body: formData,
+      });
 
       // Parse the response body regardless of status
       const data = await response.json();
