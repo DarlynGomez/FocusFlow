@@ -1,15 +1,21 @@
 import { Routes, Route } from 'react-router-dom'
+import DashboardLayout from './components/DashboardLayout'
+import HomePage from './components/HomePage'
 import UploadSetupView from './components/UploadSetupView'
 import ReadingView from './components/ReadingView'
 
 function App() {
   return (
-    <div className='w-dvw justify-center'>
-      <Routes>
-        <Route path="/" element={<UploadSetupView />} />
+    <Routes>
+      {/* Pages with sidebar */}
+      <Route element={<DashboardLayout />}>
+        <Route path="/" element={<HomePage />} />
         <Route path="/reading" element={<ReadingView />} />
-      </Routes>
-    </div>
+      </Route>
+
+      {/* Full-screen pages (no sidebar) */}
+      <Route path="/upload" element={<UploadSetupView />} />
+    </Routes>
   )
 }
 

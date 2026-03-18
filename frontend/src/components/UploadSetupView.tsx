@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { FileText, Loader2, AlertTriangle } from "lucide-react";
+import { FileText, Loader2, AlertTriangle, ArrowLeft } from "lucide-react";
 import Header from "./Header";
 import GuidanceOption from "./GuidanceOption";
 import FileUploader from "./FileUploader";
@@ -96,6 +96,16 @@ export default function UploadSetupView() {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col items-center px-4 font-sans pb-20">
       <Header />
+
+      <div className="w-full max-w-3xl mb-4">
+        <button
+          onClick={() => navigate("/")}
+          className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700 transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back to Home
+        </button>
+      </div>
 
       <main className="w-full max-w-3xl bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="bg-blue-50/50 p-6 border-b border-slate-100">
