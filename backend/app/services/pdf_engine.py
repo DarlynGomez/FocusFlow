@@ -1,13 +1,10 @@
 import pdfplumber
 import os
 import logging
-import nest_asyncio
 from typing import Optional
 
 from app.config import get_llama_api_key, llama_api_key_is_configured
 
-# Apply at module load so LlamaParse can run inside FastAPI's event loop
-nest_asyncio.apply()
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +167,6 @@ def _parse_with_llamaparse(filepath: str) -> dict:
     Falls back to pdfplumber if the key is missing, the API fails, or the response is empty.
     """
 
-    # Check the key before making any network call
     api_key = get_llama_api_key()
     if not api_key or not api_key.strip():
         logger.warning(
@@ -186,6 +182,7 @@ def _parse_with_llamaparse(filepath: str) -> dict:
 
     try:
         from llama_parse import LlamaParse
+        import asyncio
 
         parser = LlamaParse(
             api_key=api_key,
@@ -193,9 +190,10 @@ def _parse_with_llamaparse(filepath: str) -> dict:
             verbose=False,
         )
 
-        documents = parser.load_data(filepath)
+        # Run async load_data in a new event loop so it does not
+        # conflict with uvicorn's running loop on Python 3.14
+        documents = asyncio.run(parser.aload_data(filepath))
 
-        # Empty response from LlamaParse, fall back rather than return nothing
         if not documents:
             logger.warning("LlamaParse returned empty documents -- falling back to pdfplumber")
             fallback_result = _parse_with_pdfplumber(filepath)
@@ -212,8 +210,6 @@ def _parse_with_llamaparse(filepath: str) -> dict:
             blocks = [b.strip() for b in doc.text.split("\n\n") if b.strip()]
 
             for block in blocks:
-                # LlamaParse markdown headings start with # so classify them as Title
-                # so the chunker knows to keep them attached to what follows
                 if block.startswith("#"):
                     element_type = "Title"
                     clean_text = block.lstrip("#").strip()
@@ -231,7 +227,6 @@ def _parse_with_llamaparse(filepath: str) -> dict:
         return {"elements": elements, "fallback_warning": None}
 
     except ImportError:
-        # Package not installed
         logger.error("llama-parse is not installed. Run: pip install llama-parse")
         fallback_result = _parse_with_pdfplumber(filepath)
         fallback_result["fallback_warning"] = (
@@ -240,7 +235,6 @@ def _parse_with_llamaparse(filepath: str) -> dict:
         return fallback_result
 
     except Exception as e:
-        # Network error, auth error, timeout, anything unexpected from LlamaParse
         logger.error(f"LlamaParse failed: {e} -- falling back to pdfplumber")
         fallback_result = _parse_with_pdfplumber(filepath)
         fallback_result["fallback_warning"] = (
