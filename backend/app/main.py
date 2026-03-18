@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from app.api.central_router import api_router
 
 
@@ -23,9 +24,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Frontend can call for example: POST http://localhost:8000/api/documents_upload
+# Frontend can call 
 app.include_router(api_router, prefix="/api")
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def health_check():
     return {"status": "running", "message": "FocusFlow Agent is active"}
