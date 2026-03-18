@@ -138,13 +138,15 @@ def _parse_with_pdfplumber(filepath: str) -> dict:
                 text = page.extract_text()
 
                 if not text or not text.strip():
-                    # Page has no text layer, skip it rather than crash
                     logger.debug(f"Page {page_num + 1} returned no text from pdfplumber")
                     continue
 
-                # Split on double newlines to get paragraph level blocks
-                # Abigail's chunker handles finer splitting downstream
-                paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+                # Try double newline first, fall back to single newline
+                # Render's PDF extraction often only produces single newlines
+                if "\n\n" in text:
+                    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+                else:
+                    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
 
                 for para in paragraphs:
                     elements.append({
@@ -183,6 +185,7 @@ def _parse_with_llamaparse(filepath: str) -> dict:
     try:
         from llama_parse import LlamaParse
         import asyncio
+        import concurrent.futures
 
         parser = LlamaParse(
             api_key=api_key,
@@ -190,9 +193,19 @@ def _parse_with_llamaparse(filepath: str) -> dict:
             verbose=False,
         )
 
-        # Run async load_data in a new event loop so it does not
-        # conflict with uvicorn's running loop on Python 3.14
-        documents = asyncio.run(parser.aload_data(filepath))
+        # Run LlamaParse in a separate thread with its own event loop
+        # asyncio.run() fails inside uvicorn because a loop is already running
+        def run_llamaparse():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(parser.aload_data(filepath))
+            finally:
+                loop.close()
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(run_llamaparse)
+            documents = future.result(timeout=120)
 
         if not documents:
             logger.warning("LlamaParse returned empty documents -- falling back to pdfplumber")
