@@ -7,15 +7,10 @@ from app.db.init_db import init_db
 
 app = FastAPI(title="FocusFlow API")
 
-origins = [
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:5173",
-]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    # Allow any localhost/127 dev port so frontend can run on fallback ports (3001/3002/etc).
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
