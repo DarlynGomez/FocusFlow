@@ -78,6 +78,11 @@ export default function UploadSetupView() {
 
       if (data.low_text_warning && data.warning_message) {
         setBackendWarning(data.warning_message);
+
+        setTimeout(() => {
+          navigate("/reading", { state: { document: data, guidanceLevel } });
+        }, 2000);
+        return;
       }
 
       // Navigate to reading view with parsed data
