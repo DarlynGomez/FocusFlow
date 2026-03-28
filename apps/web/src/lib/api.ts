@@ -70,6 +70,12 @@ export const sessions = {
       body: JSON.stringify({ event_type, chunk_id, event_value }),
     }),
   supportCurrent: (id: string) => api<SupportMessageResponse | null>(`/sessions/${id}/support/current`),
+  supportChat: (id: string, question: string, chunk_id?: string) =>
+    api<SupportMessageResponse>(`/sessions/${id}/support/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, chunk_id }),
+    }),
 };
 
 export const chunks = {

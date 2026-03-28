@@ -6,6 +6,7 @@ from app.prompts.support import (
     WHY_IT_MATTERS_SYSTEM,
     EXPLAIN_SYSTEM,
     INTERVENTION_SYSTEM,
+    CHAT_SUPPORT_SYSTEM,
 )
 
 
@@ -61,5 +62,25 @@ def generate_intervention(chunk_text: str) -> str:
         messages=[
             {"role": "system", "content": INTERVENTION_SYSTEM},
             {"role": "user", "content": f"Current chunk:\n\n{chunk_text[:2500]}"},
+        ],
+    ).strip()
+
+
+def generate_document_chat_answer(question: str, context_excerpts: list[str]) -> str:
+    question = (question or "").strip()
+    if not question:
+        return "Please ask a question about the document."
+
+    context = "\n\n---\n\n".join(context_excerpts[:6])
+    if not context.strip():
+        return "I could not find enough document context to answer that yet."
+
+    return chat_completion(
+        messages=[
+            {"role": "system", "content": CHAT_SUPPORT_SYSTEM},
+            {
+                "role": "user",
+                "content": f"Question:\n{question}\n\nDocument excerpts:\n{context[:14000]}",
+            },
         ],
     ).strip()

@@ -12,6 +12,11 @@ import {
   type SessionResponse,
 } from "@/lib/api";
 
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 export default function ReadPage() {
   const params = useParams();
   const documentId = params.id as string;
@@ -24,6 +29,9 @@ export default function ReadPage() {
   const [supportType, setSupportType] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [supportLoading, setSupportLoading] = useState(false);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [fontSize, setFontSize] = useState<"base" | "lg">("base");
   const [supportMode, setSupportMode] = useState("medium");
 
@@ -85,6 +93,7 @@ export default function ReadPage() {
     setCurrentChunkId(chunkId);
     setSupportContent(null);
     setSupportType(null);
+    setChatMessages([]);
   };
 
   const requestSupport = async (type: "explain" | "recap" | "orient" | "why-it-matters") => {
@@ -98,10 +107,32 @@ export default function ReadPage() {
       else if (type === "orient") content = (await chunksApi.orient(currentChunkId)).content;
       else content = (await chunksApi.whyItMatters(currentChunkId)).content;
       setSupportContent(content);
+      setChatMessages((prev) => [...prev, { role: "assistant", content }]);
     } catch {
       setSupportContent("Could not load support. Please try again.");
     } finally {
       setSupportLoading(false);
+    }
+  };
+
+  const sendSupportChat = async () => {
+    if (!session || !chatInput.trim() || chatLoading) return;
+    const question = chatInput.trim();
+    setChatInput("");
+    setChatMessages((prev) => [...prev, { role: "user", content: question }]);
+    setChatLoading(true);
+    try {
+      const msg = await sessions.supportChat(session.id, question, currentChunkId || undefined);
+      setChatMessages((prev) => [...prev, { role: "assistant", content: msg.content }]);
+      setSupportContent(msg.content);
+      setSupportType("chat");
+    } catch {
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "Could not send your question. Please try again." },
+      ]);
+    } finally {
+      setChatLoading(false);
     }
   };
 
@@ -298,9 +329,9 @@ export default function ReadPage() {
           <p className="text-xs text-slate-500 truncate">Chunk: {currentChunk?.title || "-"}</p>
         </div>
         <div className="p-4 flex-1 overflow-y-auto">
-          {supportLoading && <p className="text-sm text-slate-500">Loading...</p>}
+          {supportLoading && <p className="text-sm text-slate-500 mb-3">Loading...</p>}
           {supportContent && !supportLoading && (
-            <div className="space-y-2">
+            <div className="space-y-2 mb-4 rounded-lg border border-slate-200 p-3 bg-slate-50">
               {supportType && (
                 <p className="text-xs font-medium text-indigo-600 uppercase">{supportType.replace(/-/g, " ")}</p>
               )}
@@ -316,6 +347,54 @@ export default function ReadPage() {
           {!supportContent && !supportLoading && (
             <p className="text-sm text-slate-400">Use the buttons next to the current chunk to get a recap, explanation, or orientation.</p>
           )}
+
+          <div className="mt-4 rounded-xl border border-slate-200 p-3 bg-white flex flex-col" style={{ minHeight: 360 }}>
+            <p className="text-xs font-medium text-slate-500 uppercase">Ask about this document</p>
+            <div className="mt-3 flex-1 overflow-y-auto space-y-2">
+              {chatMessages.length === 0 && (
+                <p className="text-sm text-slate-400">
+                  Ask any question about the document. I will answer using relevant chunks.
+                </p>
+              )}
+              {chatMessages.map((message, idx) => (
+                <div
+                  key={`${message.role}-${idx}`}
+                  className={`rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
+                    message.role === "user"
+                      ? "bg-indigo-600 text-white ml-6"
+                      : "bg-slate-100 text-slate-700 mr-6"
+                  }`}
+                >
+                  {message.content}
+                </div>
+              ))}
+              {chatLoading && (
+                <p className="text-xs text-slate-500">Thinking...</p>
+              )}
+            </div>
+            <div className="mt-3 flex gap-2">
+              <input
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendSupportChat();
+                  }
+                }}
+                placeholder="Ask a question about this section or the whole document"
+                className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                disabled={!session || chatLoading}
+              />
+              <button
+                onClick={sendSupportChat}
+                disabled={!session || !chatInput.trim() || chatLoading}
+                className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium disabled:opacity-50"
+              >
+                Send
+              </button>
+            </div>
+          </div>
         </div>
         <div className="p-4 border-t border-slate-100 space-y-2">
           <p className="text-xs font-medium text-slate-500">Reading settings</p>

@@ -27,6 +27,11 @@ class EventRequest(BaseModel):
     event_value: Optional[str] = None
 
 
+class ChatSupportRequest(BaseModel):
+    question: str
+    chunk_id: Optional[str] = None
+
+
 class SupportMessageResponse(BaseModel):
     id: str
     chunk_id: Optional[str] = None
