@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/mhnhp/OneDrive/Desktop/FocusFlow/FocusFlow -not -path */node_modules* -not -path */.git/* -type d)"
+    ]
+  }
+}
