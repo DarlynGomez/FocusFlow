@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { saveDocument, saveDocumentData } from "../utils/documentStorage";
 import { useNavigate } from "react-router-dom";
 import { FileText, Loader2, AlertTriangle, ArrowLeft } from "lucide-react";
 import Header from "./Header";
@@ -87,6 +88,26 @@ export default function UploadSetupView() {
 
       // Store the parsed document for the reading view
       setParsedDocument(data);
+
+      // Save lightweight metadata to localStorage so the homepage can list it
+      saveDocument({
+        id: data.session_id,
+        filename: data.filename,
+        guidanceLevel,
+        uploadedAt: new Date().toISOString(),
+        totalChunks: data.total_chunks,
+        totalPages: Array.from(
+          new Set(
+            data.elements
+              .map((e: { page_number: number | null }) => e.page_number)
+              .filter(Boolean)
+          )
+        ).length,
+        parserUsed: data.classification.parser_used,
+        sessionId: data.session_id,
+      });
+
+      saveDocumentData(data.session_id, data);
 
       if (data.low_text_warning && data.warning_message) {
         setBackendWarning(data.warning_message);
