@@ -10,10 +10,22 @@ interface TextElement {
   char_count: number;
 }
 
+interface DocumentChunk {
+  chunk_index: number;
+  text: string;
+  page_number: number | null;
+  element_type: "heading" | "table" | "text";
+  char_count: number;
+  is_section_start: boolean;
+}
+
 interface ParsedDocument {
   filename: string;
   total_elements: number;
+  total_chunks: number;
+  session_id: string;
   elements: TextElement[];
+  chunks: DocumentChunk[];
   classification: {
     parser_used: string;
     routing_reasons: string[];
@@ -28,7 +40,6 @@ interface ReadingLocationState {
   guidanceLevel: string;
 }
 
-// ─── Intervention Popup ───────────────────────────────────────────────────────
 function InterventionPopup({
   onDismiss,
   onAccept,
@@ -75,7 +86,6 @@ function InterventionPopup({
   );
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
 export default function ReadingView() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -87,16 +97,13 @@ export default function ReadingView() {
   );
   const [panelWidth, setPanelWidth] = useState(360);
 
-  // Reading position tracking
   const [currentIndex, setCurrentIndex] = useState(0);
   const chunkRefs = useRef<(HTMLDivElement | null)[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Intervention popup
   const [showIntervention, setShowIntervention] = useState(false);
   const interventionFiredRef = useRef(false);
 
-  // Panel resize
   const isDragging = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -106,13 +113,11 @@ export default function ReadingView() {
     }
   }, [state, navigate]);
 
-  // ── Scroll handler: update currentIndex + trigger intervention ──────────────
   const handleScroll = useCallback(() => {
     const container = scrollRef.current;
     if (!container) return;
 
     const containerTop = container.getBoundingClientRect().top;
-    // Reading line sits 35% down the scroll container
     const readingLine = containerTop + container.clientHeight * 0.35;
 
     let newIndex = 0;
@@ -125,19 +130,19 @@ export default function ReadingView() {
     }
     setCurrentIndex(newIndex);
 
-    // Fire intervention once after scrolling past 5 chunks
     if (newIndex >= 5 && !interventionFiredRef.current) {
       interventionFiredRef.current = true;
       setShowIntervention(true);
     }
   }, []);
 
-  // ── Panel resize handlers ───────────────────────────────────────────────────
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!isDragging.current || !containerRef.current) return;
     const containerRect = containerRef.current.getBoundingClientRect();
     const newPanelWidth = containerRect.right - e.clientX;
-    setPanelWidth(Math.max(240, Math.min(newPanelWidth, containerRect.width * 0.7)));
+    setPanelWidth(
+      Math.max(240, Math.min(newPanelWidth, containerRect.width * 0.7))
+    );
   }, []);
 
   const handleMouseUp = useCallback(() => {
@@ -159,14 +164,24 @@ export default function ReadingView() {
 
   const { document: parsedDoc } = state;
 
+  // Use chunks for page tracking if available, fall back to elements.
+  // This gives accurate page numbers once the chunker is wired in.
+  const contentItems = parsedDoc.chunks?.length
+    ? parsedDoc.chunks
+    : parsedDoc.elements;
+
   const uniquePages = Array.from(
-    new Set(parsedDoc.elements.map((e) => e.page_number).filter(Boolean))
+    new Set(contentItems.map((e) => e.page_number).filter(Boolean))
   );
   const totalPages = uniquePages.length || 1;
 
-  // Current page based on reading position
-  const currentElement = parsedDoc.elements[currentIndex];
-  const currentPage = currentElement?.page_number ?? 1;
+  const currentItem = contentItems[currentIndex];
+  const currentPage = currentItem?.page_number ?? 1;
+
+  // chunk_index of the item currently at the reading line, used by the RAG query.
+  const currentChunkIndex = parsedDoc.chunks?.length
+    ? (currentItem as DocumentChunk)?.chunk_index ?? currentIndex
+    : currentIndex;
 
   const handleDownload = () => {
     const text = parsedDoc.elements.map((el) => el.text).join("\n\n");
@@ -181,7 +196,6 @@ export default function ReadingView() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-88px)]">
-      {/* ── Top bar ─────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-slate-200 shrink-0">
         <div>
           <h1 className="text-base font-semibold text-slate-900 truncate max-w-lg">
@@ -195,16 +209,13 @@ export default function ReadingView() {
         </div>
       </div>
 
-      {/* ── Body ────────────────────────────────────────────────────────────── */}
       <div ref={containerRef} className="flex flex-1 overflow-hidden">
-        {/* Reading area */}
         <div
           ref={scrollRef}
           onScroll={handleScroll}
           className="flex-1 overflow-y-auto px-8 py-6 bg-slate-50 relative"
         >
           <div className="max-w-2xl mx-auto">
-            {/* Page indicator + Download row */}
             <div className="flex items-center justify-between mb-6">
               <span className="text-xs text-slate-400">
                 Page {currentPage} of {totalPages}
@@ -219,8 +230,10 @@ export default function ReadingView() {
             </div>
 
             <div className="space-y-4">
-              {parsedDoc.elements.map((element, index) => {
+              {contentItems.map((item, index) => {
                 const isPast = index < currentIndex;
+                const text = item.text || (item as DocumentChunk).text;
+                const elementType = item.element_type;
 
                 return (
                   <div
@@ -233,13 +246,21 @@ export default function ReadingView() {
                       transition: "opacity 0.5s ease",
                     }}
                     className={`leading-relaxed ${
-                      element.element_type === "Title"
+                      elementType === "Title" || elementType === "heading"
                         ? "text-base font-semibold text-slate-900"
+                        : elementType === "table"
+                        ? ""
                         : "text-sm text-slate-700"
                     }`}
                   >
-                    {element.text ? (
-                      element.text
+                    {elementType === "table" ? (
+                      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                        <pre className="text-xs text-slate-600 p-4 whitespace-pre-wrap">
+                          {text}
+                        </pre>
+                      </div>
+                    ) : text ? (
+                      text
                     ) : (
                       <span className="block w-full h-4 bg-slate-200 rounded-md" />
                     )}
@@ -247,12 +268,10 @@ export default function ReadingView() {
                 );
               })}
 
-              {/* Bottom padding so last element can scroll fully past reading line */}
               <div className="h-[50vh]" />
             </div>
           </div>
 
-          {/* Intervention popup */}
           {showIntervention && (
             <InterventionPopup
               onDismiss={() => setShowIntervention(false)}
@@ -263,7 +282,6 @@ export default function ReadingView() {
             />
           )}
 
-          {/* Floating AI Assistant button */}
           {!isPanelOpen && (
             <button
               onClick={() => setIsPanelOpen(true)}
@@ -275,7 +293,6 @@ export default function ReadingView() {
           )}
         </div>
 
-        {/* ── Right panel ───────────────────────────────────────────────────── */}
         {isPanelOpen && (
           <>
             <div
@@ -286,7 +303,10 @@ export default function ReadingView() {
                 document.body.style.userSelect = "none";
               }}
             />
-            <div style={{ width: panelWidth }} className="shrink-0 overflow-hidden">
+            <div
+              style={{ width: panelWidth }}
+              className="shrink-0 overflow-hidden"
+            >
               <RightPanel
                 documentTitle={parsedDoc.filename}
                 currentPage={currentPage}
@@ -294,6 +314,8 @@ export default function ReadingView() {
                 guidanceLevel={guidanceLevel}
                 onGuidanceLevelChange={setGuidanceLevel}
                 onClose={() => setIsPanelOpen(false)}
+                sessionId={parsedDoc.session_id}
+                currentChunkIndex={currentChunkIndex}
               />
             </div>
           </>

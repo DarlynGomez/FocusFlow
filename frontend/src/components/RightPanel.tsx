@@ -16,6 +16,8 @@ interface RightPanelProps {
   guidanceLevel: string;
   onGuidanceLevelChange: (level: string) => void;
   onClose: () => void;
+  sessionId: string;
+  currentChunkIndex: number;
 }
 
 // Welcome message before the user sends anything
@@ -26,12 +28,14 @@ const WELCOME_MESSAGE: Message = {
 };
 
 export default function RightPanel({
-  documentTitle,
+  documentTitle: _documentTitle,
   currentPage,
   totalPages,
   guidanceLevel,
   onGuidanceLevelChange,
   onClose,
+  sessionId,
+  currentChunkIndex,
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<"chat" | "settings">("chat");
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
@@ -51,35 +55,45 @@ export default function RightPanel({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleSend = () => {
-    // Don't send if the input is empty or just whitespace
+  const handleSend = async () => {
     const trimmed = inputValue.trim();
     if (!trimmed) return;
 
-    // Build the user's message object and add it to the list.
-    // Date.now() gives us a unique number to use as the message id.
     const userMessage: Message = {
       id: Date.now(),
       role: "user",
       text: trimmed,
     };
-
     setMessages((prev) => [...prev, userMessage]);
     setInputValue("");
 
-    // Placeholder AI response. In a future sprint this will call the Claude API
-    // and pass currentPage and documentTitle as context.
-    const aiPlaceholder: Message = {
-      id: Date.now() + 1,
-      role: "ai",
-      text: `I'm reviewing page ${currentPage} of "${documentTitle}". Full AI responses will be wired up in the next sprint.`,
-    };
+    try {
+      const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+      const response = await fetch(`${BASE_URL}/api/documents/query`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          question: trimmed,
+          current_chunk_index: currentChunkIndex,
+        }),
+      });
 
-    // setTimeout with 0ms delay pushes the AI response to the next render cycle
-    // so the user's message appears first before the AI reply shows up.
-    setTimeout(() => {
-      setMessages((prev) => [...prev, aiPlaceholder]);
-    }, 0);
+      const data = await response.json();
+      const aiMessage: Message = {
+        id: Date.now() + 1,
+        role: "ai",
+        text: data.answer,
+      };
+      setMessages((prev) => [...prev, aiMessage]);
+    } catch {
+      const errorMessage: Message = {
+        id: Date.now() + 1,
+        role: "ai",
+        text: "Sorry, I had trouble reaching the server. Please try again.",
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {

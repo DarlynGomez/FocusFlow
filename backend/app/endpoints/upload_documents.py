@@ -3,11 +3,16 @@
 import tempfile
 import os
 import logging
+import uuid
+from app.services.rag_service import build_index
 from typing import Literal
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from app.schemas.document import DocumentResponse, TextChunk, ParseClassification
 from app.services.pdf_engine import parse_pdf_smart
+
+from app.schemas.document import DocumentResponse, TextChunk, ParseClassification, DocumentChunk
+from app.services.chunker import chunk_elements
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -65,12 +70,39 @@ async def upload_document(
             for elem in parse_result["elements"]
         ]
 
+        # Run the chunker to produce reader-friendly chunks from the raw elements.
+        raw_chunks = chunk_elements(
+            parse_result["elements"],
+            guidance_level=guidance_level,
+        )
+
+        chunks = [
+            DocumentChunk(
+                chunk_index=c["chunk_index"],
+                text=c["text"],
+                page_number=c.get("page_number"),
+                element_type=c["element_type"],
+                char_count=c["char_count"],
+                is_section_start=c["is_section_start"],
+            )
+            for c in raw_chunks
+        ]
+
+        session_id = str(uuid.uuid4())
+        build_index(session_id, raw_chunks)
+
+
+        build_index(session_id, raw_chunks)
+
         return DocumentResponse(
             filename=file.filename or "unknown_document.pdf",
             total_elements=len(elements),
             elements=elements,
+            chunks=chunks,
+            total_chunks=len(chunks),
+            session_id=session_id,
             classification=classification,
-            guidance_level=guidance_level,  # now passed in from the form field
+            guidance_level=guidance_level,
             low_text_warning=parse_result["low_text_warning"],
             warning_message=parse_result.get("warning_message"),
         )

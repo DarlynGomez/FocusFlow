@@ -5,15 +5,27 @@ import Header from "./Header";
 import GuidanceOption from "./GuidanceOption";
 import FileUploader from "./FileUploader";
 
+interface DocumentChunk {
+  chunk_index: number;
+  text: string;
+  page_number: number | null;
+  element_type: "heading" | "table" | "text";
+  char_count: number;
+  is_section_start: boolean;
+}
+
 interface ParsedDocument {
   filename: string;
   total_elements: number;
+  total_chunks: number;
+  session_id: string;
   elements: {
     text: string;
     element_type: string;
     page_number: number | null;
     char_count: number;
   }[];
+  chunks: DocumentChunk[];
   classification: {
     parser_used: string;
     routing_reasons: string[];
@@ -149,7 +161,8 @@ export default function UploadSetupView() {
             {parsedDocument && !backendWarning && (
               <p className="text-sm text-green-600 mt-2">
                 Document processed successfully. {parsedDocument.total_elements}{" "}
-                sections extracted.
+                sections extracted, {parsedDocument.total_chunks} chunks
+                created.
               </p>
             )}
           </section>
