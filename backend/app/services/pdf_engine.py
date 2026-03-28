@@ -1,4 +1,7 @@
+# backend/app/services/pdf_engine.py
+
 import pdfplumber
+import re
 import os
 import logging
 from typing import Optional
@@ -9,7 +12,6 @@ from app.config import get_llama_api_key, llama_api_key_is_configured
 logger = logging.getLogger(__name__)
 
 
-# Classifier
 def classify_pdf(filepath: str) -> dict:
     """
     Lightweight pre-scan of the PDF to decide which parser to use.
@@ -26,17 +28,21 @@ def classify_pdf(filepath: str) -> dict:
     try:
         with pdfplumber.open(filepath) as pdf:
             total_pages = len(pdf.pages)
-
-            # Only sample first 3 pages to keep classification fast
             sample_pages = pdf.pages[:min(3, total_pages)]
 
             total_chars = 0
             total_images = 0
             empty_page_count = 0
+            cid_count = 0
 
             for page in sample_pages:
                 text = page.extract_text() or ""
                 total_chars += len(text)
+
+                # Count how many (cid:N) placeholder tokens appear in the extracted text.
+                # These are characters pdfplumber cannot decode -- math symbols, special glyphs.
+                # A high count means the PDF has encoding that pdfplumber cannot handle.
+                cid_count += len(re.findall(r'\(cid:\d+\)', text))
 
                 if hasattr(page, "images"):
                     total_images += len(page.images)
@@ -48,17 +54,37 @@ def classify_pdf(filepath: str) -> dict:
                 total_chars / len(sample_pages) if sample_pages else 0
             )
 
+            # Math density heuristic: look for patterns that strongly suggest LaTeX math.
+            # We sample the raw text of the first page specifically for this.
+            first_page_text = pdf.pages[0].extract_text() or ""
+
+            # These are patterns that appear when pdfplumber extracts math-heavy PDFs:
+            # Greek letters, nabla/norm operators, subscript runs, fraction-like tokens.
+            math_patterns = [
+                r'\\[a-zA-Z]+',          # LaTeX command remnants like \theta
+                r'\(cid:\d+\)',           # Unrenderable glyph placeholders
+                r'[∇∑∏∫√∞≤≥≠±∈∉⊆∥]',   # Common math Unicode symbols
+                r'\b[A-Z]_\{?[a-z0-9]+\}?',  # Variable subscripts like A_{ij}
+                r'\d+/\d+',              # Inline fractions
+            ]
+
+            math_signal_count = sum(
+                len(re.findall(pattern, first_page_text))
+                for pattern in math_patterns
+            )
+
             result["signals"] = {
                 "total_pages": total_pages,
                 "chars_sampled": total_chars,
                 "chars_per_page": round(chars_per_page, 1),
                 "images_found": total_images,
                 "empty_pages_in_sample": empty_page_count,
+                "cid_tokens_found": cid_count,
+                "math_signals": math_signal_count,
                 "llama_available": llama_api_key_is_configured(),
             }
 
-            # Check all edge cases
-            # No text at all likely a scanned document
+            # No text at all -- scanned document
             if total_chars == 0 or empty_page_count == len(sample_pages):
                 result["parser"] = "llamaparse"
                 result["reasons"].append(
@@ -75,7 +101,7 @@ def classify_pdf(filepath: str) -> dict:
                 )
                 return result
 
-            # Too many images relative to pages
+            # High image density
             if total_images > len(sample_pages) * 2:
                 result["parser"] = "llamaparse"
                 result["reasons"].append(
@@ -84,7 +110,20 @@ def classify_pdf(filepath: str) -> dict:
                 )
                 return result
 
-            # Two column layout detection
+            # Math/equation heavy document detection.
+            # If we see more than 5 (cid:N) tokens OR more than 10 math signals across
+            # the sampled pages, pdfplumber will produce shattered unusable output.
+            # Route to LlamaParse which handles LaTeX-rendered PDFs properly.
+            if cid_count > 5 or math_signal_count > 10:
+                result["parser"] = "llamaparse"
+                result["reasons"].append(
+                    f"Math/equation-heavy content detected "
+                    f"({cid_count} unrenderable glyph tokens, "
+                    f"{math_signal_count} math symbol signals)"
+                )
+                return result
+
+            # Two-column layout detection
             first_page = pdf.pages[0]
             words = first_page.extract_words()
 
@@ -107,13 +146,11 @@ def classify_pdf(filepath: str) -> dict:
                     )
                     return result
 
-            # No override triggered standard document is fine with pdfplumber
             result["reasons"].append(
                 "Standard single-column text PDF -- fast parser is sufficient"
             )
 
     except Exception as e:
-        # If classification itself crashes default to llamaparse as the safer option
         logger.warning(f"Classification failed: {e} -- defaulting to llamaparse")
         result["parser"] = "llamaparse"
         result["reasons"].append(
@@ -127,8 +164,29 @@ def classify_pdf(filepath: str) -> dict:
 def _parse_with_pdfplumber(filepath: str) -> dict:
     """
     Fast local parser for standard single-column text PDFs.
-    No API key required, runs entirely locally.
+    Filters out broken equation fragments, page numbers, and encoding artifacts
+    before returning elements.
     """
+
+    # Patterns that identify junk fragments we should discard.
+    # These appear when pdfplumber partially extracts math or badly encoded text.
+    JUNK_PATTERNS = [
+        re.compile(r'^\(cid:\d+\)[\s\(cid:\d+\)]*$'),  # Pure (cid:N) placeholder lines
+        re.compile(r'^[∗†‡§¶]+$'),                       # Lone footnote markers
+        re.compile(r'^[\d\s\.,\+\-\*\/\=]+$'),           # Lines of only numbers/operators
+        re.compile(r'^[a-zA-Z\s]{1,3}$'),                # Very short fragments (1-3 chars)
+        re.compile(r'^\W+$'),                             # Lines of only punctuation/symbols
+    ]
+
+    def is_junk(text: str) -> bool:
+        """Returns True if this fragment is too broken or short to be useful content."""
+        stripped = text.strip()
+        if len(stripped) < 4:
+            return True
+        for pattern in JUNK_PATTERNS:
+            if pattern.match(stripped):
+                return True
+        return False
 
     elements = []
 
@@ -141,14 +199,47 @@ def _parse_with_pdfplumber(filepath: str) -> dict:
                     logger.debug(f"Page {page_num + 1} returned no text from pdfplumber")
                     continue
 
-                # Try double newline first, fall back to single newline
-                # Render's PDF extraction often only produces single newlines
+                # Split on double newlines first, then fall back to single newlines.
                 if "\n\n" in text:
-                    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+                    raw_paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
                 else:
-                    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+                    raw_paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
 
-                for para in paragraphs:
+                # Stitch consecutive short lines together.
+                # pdfplumber often splits a single sentence across multiple lines because
+                # each PDF text object is its own extraction unit. We merge lines that
+                # don't end with sentence-ending punctuation into the next line.
+                stitched = []
+                buffer = ""
+
+                for para in raw_paragraphs:
+                    if is_junk(para):
+                        # If we have content in the buffer, flush it before skipping junk.
+                        if buffer:
+                            stitched.append(buffer.strip())
+                            buffer = ""
+                        continue
+
+                    if buffer:
+                        # If the buffer doesn't end with sentence-ending punctuation,
+                        # treat this line as a continuation and join with a space.
+                        if not re.search(r'[.!?:]\s*$', buffer):
+                            buffer = buffer + " " + para
+                        else:
+                            stitched.append(buffer.strip())
+                            buffer = para
+                    else:
+                        buffer = para
+
+                # Flush whatever is left in the buffer after the loop ends.
+                if buffer:
+                    stitched.append(buffer.strip())
+
+                for para in stitched:
+                    # Final check: skip anything that is still too short after stitching.
+                    if len(para) < 10:
+                        continue
+
                     elements.append({
                         "text": para,
                         "element_type": "text",
@@ -164,9 +255,10 @@ def _parse_with_pdfplumber(filepath: str) -> dict:
 
 def _parse_with_llamaparse(filepath: str) -> dict:
     """
-    Deep parser for scanned documents, two-column layouts, and image-heavy PDFs.
+    Deep parser for scanned documents, two-column layouts, image-heavy, and math PDFs.
     Requires LLAMA_CLOUD_API_KEY in the .env file.
-    Falls back to pdfplumber if the key is missing, the API fails, or the response is empty.
+    Falls back to pdfplumber (with stitching) if the key is missing, the API fails,
+    or the response is empty.
     """
 
     api_key = get_llama_api_key()
@@ -193,8 +285,6 @@ def _parse_with_llamaparse(filepath: str) -> dict:
             verbose=False,
         )
 
-        # Run LlamaParse in a separate thread with its own event loop
-        # asyncio.run() fails inside uvicorn because a loop is already running
         def run_llamaparse():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -222,7 +312,46 @@ def _parse_with_llamaparse(filepath: str) -> dict:
 
             blocks = [b.strip() for b in doc.text.split("\n\n") if b.strip()]
 
+            # Stitch consecutive short blocks together the same way we do for pdfplumber.
+            # LlamaParse markdown can also split a single paragraph across multiple blocks
+            # especially for wrapped text in two-column layouts.
+            stitched_blocks = []
+            buffer = ""
+
             for block in blocks:
+                # Markdown headings always stand alone -- never merge them.
+                if block.startswith("#"):
+                    if buffer:
+                        stitched_blocks.append(buffer.strip())
+                        buffer = ""
+                    stitched_blocks.append(block)
+                    continue
+
+                # Markdown table rows also stand alone.
+                if block.startswith("|"):
+                    if buffer:
+                        stitched_blocks.append(buffer.strip())
+                        buffer = ""
+                    stitched_blocks.append(block)
+                    continue
+
+                if buffer:
+                    if not re.search(r'[.!?:]\s*$', buffer):
+                        buffer = buffer + " " + block
+                    else:
+                        stitched_blocks.append(buffer.strip())
+                        buffer = block
+                else:
+                    buffer = block
+
+            if buffer:
+                stitched_blocks.append(buffer.strip())
+
+            for block in stitched_blocks:
+                # Skip blocks that are too short to be meaningful content.
+                if len(block.strip()) < 10:
+                    continue
+
                 if block.startswith("#"):
                     element_type = "Title"
                     clean_text = block.lstrip("#").strip()
@@ -257,7 +386,6 @@ def _parse_with_llamaparse(filepath: str) -> dict:
         return fallback_result
 
 
-# Router
 def parse_pdf_smart(filepath: str) -> dict:
     """
     The only function the endpoint calls.
@@ -265,13 +393,11 @@ def parse_pdf_smart(filepath: str) -> dict:
     and evaluates the output quality before returning.
     """
 
-    # Classify first
     classification = classify_pdf(filepath)
     chosen_parser = classification["parser"]
 
     logger.info(f"Parser selected: {chosen_parser} | Reasons: {classification['reasons']}")
 
-    # If llamaparse was chosen but the key is not configured override now
     if chosen_parser == "llamaparse" and not llama_api_key_is_configured():
         logger.info(
             "Classifier selected llamaparse but key is not configured -- "
@@ -282,7 +408,6 @@ def parse_pdf_smart(filepath: str) -> dict:
             "LlamaParse key not configured -- using fast parser instead"
         )
 
-    # Route to the right parser
     if chosen_parser == "llamaparse":
         parse_result = _parse_with_llamaparse(filepath)
     else:
@@ -291,7 +416,6 @@ def parse_pdf_smart(filepath: str) -> dict:
     elements = parse_result["elements"]
     fallback_warning = parse_result.get("fallback_warning")
 
-    # Evaluate output quality
     total_chars = sum(e["char_count"] for e in elements)
     low_text_warning = total_chars < 200
 
