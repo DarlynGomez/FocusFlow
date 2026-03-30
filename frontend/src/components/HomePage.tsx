@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { Plus, FileText, Trash2 } from "lucide-react";
+import { Plus, FileText, Trash2, BookOpen } from "lucide-react";
 import { useState } from "react";
 import {
   getSavedDocuments,
@@ -17,27 +17,17 @@ export default function HomePage() {
 
   const handleOpenDocument = async (doc: SavedDocument) => {
     setRestoreError(null);
-
-    // Get the full document data from localStorage.
     const data = getDocumentData(doc.sessionId) as Record<
       string,
       unknown
     > | null;
-
     if (!data) {
-      // Data was lost (localStorage cleared, different browser, etc).
-      // Send them to upload instead.
       navigate("/upload");
       return;
     }
-
     setRestoringId(doc.id);
-
     try {
       const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
-      // Restore the FAISS index on the server.
-      // If the server never restarted this is a no-op (returns restored: false).
       await fetch(`${BASE_URL}/api/documents/restore`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -46,13 +36,8 @@ export default function HomePage() {
           chunks: (data as { chunks: unknown[] }).chunks ?? [],
         }),
       });
-
-      // Navigate to the reading view with the full document data.
       navigate("/reading", {
-        state: {
-          document: data,
-          guidanceLevel: doc.guidanceLevel,
-        },
+        state: { document: data, guidanceLevel: doc.guidanceLevel },
       });
     } catch {
       setRestoreError(
@@ -69,80 +54,106 @@ export default function HomePage() {
     setDocuments(getSavedDocuments());
   };
 
-  const formatDate = (iso: string) => {
-    return new Date(iso).toLocaleDateString("en-US", {
-      month: "numeric",
+  const formatDate = (iso: string) =>
+    new Date(iso).toLocaleDateString("en-US", {
+      month: "short",
       day: "numeric",
       year: "numeric",
     });
-  };
+
+  const isEmpty = documents.length === 0;
 
   return (
-    <div className="max-w-5xl mx-auto pt-8 px-6">
-      <h1 className="text-2xl font-bold text-slate-900 mb-6">Your documents</h1>
+    <div className="max-w-4xl mx-auto pt-10 px-6 pb-20">
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold text-slate-900">Your documents</h1>
+        <p className="text-sm text-slate-400 mt-1">
+          Upload a PDF to start reading with FocusFlow.
+        </p>
+      </div>
 
       {restoreError && (
         <p className="text-sm text-red-500 mb-4">{restoreError}</p>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        <button
-          onClick={() => navigate("/upload")}
-          className="flex flex-col items-center justify-center gap-3 p-8 bg-white border-2 border-dashed border-slate-300 rounded-xl text-slate-400 hover:border-indigo-400 hover:text-indigo-500 transition-colors cursor-pointer"
-        >
-          <Plus className="w-8 h-8" />
-          <span className="text-sm font-medium">Add new document</span>
-        </button>
-
-        {documents.length === 0 && (
-          <div className="flex items-center col-span-2 px-2 py-8">
-            <p className="text-sm text-slate-400">
-              No documents yet. Upload your first PDF to get started.
+      {isEmpty ? (
+        // Clean centered empty state
+        <div className="flex flex-col items-center justify-center py-24 gap-6">
+          <div className="w-16 h-16 rounded-2xl bg-indigo-50 flex items-center justify-center">
+            <BookOpen className="w-8 h-8 text-indigo-400" />
+          </div>
+          <div className="text-center">
+            <p className="text-base font-semibold text-slate-700">
+              No documents yet
+            </p>
+            <p className="text-sm text-slate-400 mt-1">
+              Upload your first PDF to get started.
             </p>
           </div>
-        )}
-
-        {documents.map((doc) => (
-          <div
-            key={doc.id}
-            onClick={() => handleOpenDocument(doc)}
-            className="relative flex flex-col gap-2 p-5 bg-white border border-slate-200 rounded-xl hover:shadow-md transition-shadow cursor-pointer group"
+          <button
+            onClick={() => navigate("/upload")}
+            className="flex items-center gap-2 px-6 py-3 bg-indigo-500 hover:bg-indigo-600 text-white text-sm font-medium rounded-xl transition-colors"
           >
-            <button
-              onClick={(e) => handleDelete(e, doc.id)}
-              className="absolute top-3 right-3 p-1.5 rounded-lg text-slate-300 hover:text-red-400 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all"
-              aria-label="Remove document"
+            <Plus className="w-4 h-4" />
+            Upload a document
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {/* Add new card */}
+          <button
+            onClick={() => navigate("/upload")}
+            className="flex flex-col items-center justify-center gap-3 p-8 bg-white border-2 border-dashed border-slate-200 rounded-xl text-slate-400 hover:border-indigo-400 hover:text-indigo-500 transition-colors min-h-35"
+          >
+            <Plus className="w-6 h-6" />
+            <span className="text-sm font-medium">Add document</span>
+          </button>
+
+          {documents.map((doc) => (
+            <div
+              key={doc.id}
+              onClick={() => handleOpenDocument(doc)}
+              className="relative flex flex-col gap-3 p-5 bg-white border border-slate-200 rounded-xl hover:shadow-md hover:border-slate-300 transition-all cursor-pointer group min-h-35"
             >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
+              <button
+                onClick={(e) => handleDelete(e, doc.id)}
+                className="absolute top-3 right-3 p-1.5 rounded-lg text-slate-300 hover:text-red-400 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all"
+                aria-label="Remove document"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
 
-            <FileText className="w-8 h-8 text-indigo-500" />
-            <h3 className="text-sm font-semibold text-slate-900 pr-6 truncate">
-              {doc.filename}
-            </h3>
-            <p className="text-xs text-slate-400">
-              {formatDate(doc.uploadedAt)}
-            </p>
-
-            {/* Loading indicator while restoring the session */}
-            {restoringId === doc.id ? (
-              <p className="text-xs text-indigo-500 mt-auto">Opening...</p>
-            ) : (
-              <div className="flex items-center gap-2 mt-auto flex-wrap">
-                <span className="text-xs text-slate-500">
-                  {doc.totalPages} pages
-                </span>
-                <span className="text-slate-300 text-xs">·</span>
-                <span className="text-xs text-slate-500 capitalize">
-                  {doc.guidanceLevel} guidance
-                </span>
-                <span className="text-slate-300 text-xs">·</span>
-                <span className="text-xs text-slate-500">{doc.parserUsed}</span>
+              <FileText className="w-7 h-7 text-indigo-500" />
+              <div className="flex-1">
+                <h3 className="text-sm font-semibold text-slate-900 pr-6 truncate leading-snug">
+                  {doc.filename}
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {formatDate(doc.uploadedAt)}
+                </p>
               </div>
-            )}
-          </div>
-        ))}
-      </div>
+
+              {restoringId === doc.id ? (
+                <p className="text-xs text-indigo-500">Opening...</p>
+              ) : (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs text-slate-400">
+                    {doc.totalPages} pages
+                  </span>
+                  <span className="text-slate-200 text-xs">·</span>
+                  <span className="text-xs text-slate-400 capitalize">
+                    {doc.guidanceLevel}
+                  </span>
+                  <span className="text-slate-200 text-xs">·</span>
+                  <span className="text-xs text-slate-400">
+                    {doc.parserUsed}
+                  </span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -14,12 +14,17 @@ interface DocumentChunk {
   chunk_index: number;
   text: string;
   page_number: number | null;
-  element_type: "heading" | "table" | "text" | "image";
+  element_type: "heading" | "table" | "text" | "image" | "Title";
   char_count: number;
   is_section_start: boolean;
   image_data?: string;
   image_width?: number;
   image_height?: number;
+  title?: string;
+  key_idea?: string;
+  why_it_matters?: string;
+  estimated_read_time_seconds?: number;
+  rendered_html?: string;
 }
 
 interface ParsedDocument {

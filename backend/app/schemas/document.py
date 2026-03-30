@@ -16,10 +16,14 @@ class DocumentChunk(BaseModel):
     element_type: str = "text"
     char_count: int
     is_section_start: bool = False
-    # Populated only when element_type is "image"
     image_data: Optional[str] = None
     image_width: Optional[int] = None
     image_height: Optional[int] = None
+    title: Optional[str] = None
+    key_idea: Optional[str] = None
+    why_it_matters: Optional[str] = None
+    estimated_read_time_seconds: Optional[int] = None
+    rendered_html: Optional[str] = None
 
 
 class ParseClassification(BaseModel):

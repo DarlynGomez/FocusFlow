@@ -10,6 +10,8 @@ from app.schemas.document import DocumentResponse, TextChunk, ParseClassificatio
 from app.services.pdf_engine import parse_pdf_smart
 from app.services.chunker import chunk_elements
 from app.services.pdf_parser_service import extract_pages, extract_blocks_reading_order
+from app.services.enrichment_service import enrich_chunks
+
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -109,10 +111,10 @@ async def upload_document(
         for img_list in images_by_page.values():
             merged_elements.extend(img_list)
 
-        raw_chunks = chunk_elements(
-            merged_elements,
-            guidance_level=guidance_level,
-        )
+        raw_chunks = chunk_elements(merged_elements, guidance_level=guidance_level)
+
+        # Enrich chunks with plain-English metadata and HTML table rendering
+        raw_chunks = enrich_chunks(raw_chunks)
 
         chunks = [
             DocumentChunk(
@@ -122,13 +124,18 @@ async def upload_document(
                 element_type=c["element_type"],
                 char_count=c["char_count"],
                 is_section_start=c["is_section_start"],
-                # Pass image fields through -- these are None for non-image chunks.
                 image_data=c.get("image_data"),
                 image_width=c.get("image_width"),
                 image_height=c.get("image_height"),
+                title=c.get("title"),
+                key_idea=c.get("key_idea"),
+                why_it_matters=c.get("why_it_matters"),
+                estimated_read_time_seconds=c.get("estimated_read_time_seconds"),
+                rendered_html=c.get("rendered_html"),
             )
             for c in raw_chunks
         ]
+
 
         session_id = str(uuid.uuid4())
         build_index(session_id, raw_chunks)

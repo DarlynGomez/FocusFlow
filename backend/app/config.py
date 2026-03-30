@@ -3,6 +3,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+chat_model: str = os.getenv("CHAT_MODEL", "claude-haiku-4-5-20251001")
+
 def get_llama_api_key() -> str | None:
     """
     Returns the LlamaParse API key from the environment.
