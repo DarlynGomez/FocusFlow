@@ -2,6 +2,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState, useRef, useCallback } from "react";
 import { MessageCircle, X, Lightbulb, Download } from "lucide-react";
 import RightPanel from "./RightPanel";
+import ChunkRenderer from "./ChunkRenderer";
 
 interface TextElement {
   text: string;
@@ -14,9 +15,12 @@ interface DocumentChunk {
   chunk_index: number;
   text: string;
   page_number: number | null;
-  element_type: "heading" | "table" | "text";
+  element_type: "heading" | "table" | "text" | "image" | "Title";
   char_count: number;
   is_section_start: boolean;
+  image_data?: string;
+  image_width?: number;
+  image_height?: number;
 }
 
 interface ParsedDocument {
@@ -50,7 +54,7 @@ function InterventionPopup({
   return (
     <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 w-72 bg-white border border-indigo-200 rounded-2xl shadow-lg shadow-indigo-100 p-4 flex flex-col gap-3 animate-slide-up">
       <div className="flex items-start gap-3">
-        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center">
+        <div className="shrink-0 w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center">
           <Lightbulb className="w-4 h-4 text-indigo-500" />
         </div>
         <div className="flex-1 min-w-0">
@@ -63,7 +67,7 @@ function InterventionPopup({
         </div>
         <button
           onClick={onDismiss}
-          className="flex-shrink-0 p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+          className="shrink-0 p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
         >
           <X className="w-3.5 h-3.5" />
         </button>
@@ -96,14 +100,15 @@ export default function ReadingView() {
     state?.guidanceLevel ?? "medium"
   );
   const [panelWidth, setPanelWidth] = useState(360);
-
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [showIntervention, setShowIntervention] = useState(false);
+
+  // These must be declared before any early return so hooks are always
+  // called in the same order on every render.
+
   const chunkRefs = useRef<(HTMLDivElement | null)[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  const [showIntervention, setShowIntervention] = useState(false);
   const interventionFiredRef = useRef(false);
-
   const isDragging = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -164,24 +169,23 @@ export default function ReadingView() {
 
   const { document: parsedDoc } = state;
 
-  // Use chunks for page tracking if available, fall back to elements.
-  // This gives accurate page numbers once the chunker is wired in.
   const contentItems = parsedDoc.chunks?.length
     ? parsedDoc.chunks
     : parsedDoc.elements;
 
-  const uniquePages = Array.from(
-    new Set(contentItems.map((e) => e.page_number).filter(Boolean))
-  );
-  const totalPages = uniquePages.length || 1;
-
   const currentItem = contentItems[currentIndex];
-  const currentPage = currentItem?.page_number ?? 1;
 
-  // chunk_index of the item currently at the reading line, used by the RAG query.
   const currentChunkIndex = parsedDoc.chunks?.length
     ? (currentItem as DocumentChunk)?.chunk_index ?? currentIndex
     : currentIndex;
+
+  const currentPage =
+    (contentItems[currentIndex] as DocumentChunk)?.page_number ?? 1;
+
+  const totalPages = contentItems.reduce((max, item) => {
+    const page = (item as DocumentChunk).page_number ?? 1;
+    return page > max ? page : max;
+  }, 1);
 
   const handleDownload = () => {
     const text = parsedDoc.elements.map((el) => el.text).join("\n\n");
@@ -213,63 +217,47 @@ export default function ReadingView() {
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className="flex-1 overflow-y-auto px-8 py-6 bg-slate-50 relative"
+          className="flex-1 overflow-y-auto bg-slate-100 relative"
         >
-          <div className="max-w-2xl mx-auto">
-            <div className="flex items-center justify-between mb-6">
-              <span className="text-xs text-slate-400">
-                Page {currentPage} of {totalPages}
-              </span>
-              <button
-                onClick={handleDownload}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-              >
-                <Download className="w-3.5 h-3.5" />
-                Download
-              </button>
-            </div>
+          <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-2 bg-white border-b border-slate-200">
+            <span className="text-xs text-slate-400">
+              Page {currentPage} of {totalPages}
+            </span>
+            <button
+              onClick={handleDownload}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Download
+            </button>
+          </div>
 
-            <div className="space-y-4">
-              {contentItems.map((item, index) => {
-                const isPast = index < currentIndex;
-                const text = item.text || (item as DocumentChunk).text;
-                const elementType = item.element_type;
+          <div className="max-w-2xl mx-auto px-8 py-6 space-y-4">
+            {contentItems.map((item, index) => {
+              const isPast = index < currentIndex;
+              const chunk = item as DocumentChunk;
 
-                return (
-                  <div
-                    key={index}
-                    ref={(el) => {
-                      chunkRefs.current[index] = el;
-                    }}
-                    style={{
-                      opacity: isPast ? 0.22 : 1,
-                      transition: "opacity 0.5s ease",
-                    }}
-                    className={`leading-relaxed ${
-                      elementType === "Title" || elementType === "heading"
-                        ? "text-base font-semibold text-slate-900"
-                        : elementType === "table"
-                        ? ""
-                        : "text-sm text-slate-700"
-                    }`}
-                  >
-                    {elementType === "table" ? (
-                      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                        <pre className="text-xs text-slate-600 p-4 whitespace-pre-wrap">
-                          {text}
-                        </pre>
-                      </div>
-                    ) : text ? (
-                      text
-                    ) : (
-                      <span className="block w-full h-4 bg-slate-200 rounded-md" />
-                    )}
-                  </div>
-                );
-              })}
-
-              <div className="h-[50vh]" />
-            </div>
+              return (
+                <div
+                  key={index}
+                  ref={(el) => {
+                    chunkRefs.current[index] = el;
+                  }}
+                  style={{
+                    opacity: isPast ? 0.22 : 1,
+                    transition: "opacity 0.5s ease",
+                  }}
+                >
+                  <ChunkRenderer
+                    elementType={chunk.element_type}
+                    text={chunk.text}
+                    imageData={chunk.image_data}
+                    pageNumber={chunk.page_number}
+                  />
+                </div>
+              );
+            })}
+            <div className="h-[50vh]" />
           </div>
 
           {showIntervention && (

@@ -1,5 +1,9 @@
 import { useState } from "react";
-import { saveDocument, saveDocumentData } from "../utils/documentStorage";
+import {
+  saveDocument,
+  saveDocumentData,
+  saveFileData,
+} from "../utils/documentStorage";
 import { useNavigate } from "react-router-dom";
 import { FileText, Loader2, AlertTriangle, ArrowLeft } from "lucide-react";
 import Header from "./Header";
@@ -10,9 +14,12 @@ interface DocumentChunk {
   chunk_index: number;
   text: string;
   page_number: number | null;
-  element_type: "heading" | "table" | "text";
+  element_type: "heading" | "table" | "text" | "image";
   char_count: number;
   is_section_start: boolean;
+  image_data?: string;
+  image_width?: number;
+  image_height?: number;
 }
 
 interface ParsedDocument {
@@ -50,6 +57,18 @@ export default function UploadSetupView() {
 
   // Stores a non fatal warning from the backend
   const [backendWarning, setBackendWarning] = useState<string | null>(null);
+
+  const readFileAsBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        resolve(result.split(",")[1]);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
 
   const handleStartReading = async () => {
     if (!file) {
@@ -89,7 +108,6 @@ export default function UploadSetupView() {
       // Store the parsed document for the reading view
       setParsedDocument(data);
 
-      // Save lightweight metadata to localStorage so the homepage can list it
       saveDocument({
         id: data.session_id,
         filename: data.filename,
@@ -109,16 +127,20 @@ export default function UploadSetupView() {
 
       saveDocumentData(data.session_id, data);
 
+      // Wait for file to be fully saved before navigating.
+      // ReadingView reads fileData synchronously on mount so it must exist first.
+      const base64 = await readFileAsBase64(file);
+      saveFileData(data.session_id, base64);
+
+      // Now safe to navigate -- file is confirmed in localStorage.
       if (data.low_text_warning && data.warning_message) {
         setBackendWarning(data.warning_message);
-
         setTimeout(() => {
           navigate("/reading", { state: { document: data, guidanceLevel } });
         }, 2000);
         return;
       }
 
-      // Navigate to reading view with parsed data
       navigate("/reading", { state: { document: data, guidanceLevel } });
     } catch (error) {
       const message =
