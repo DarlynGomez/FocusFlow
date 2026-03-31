@@ -179,7 +179,7 @@ export default function ChunkRenderer({
     return (
       <div className="mt-2 mb-6 text-center">
         <h1
-          style={{ fontSize: "1.375rem", fontWeight: 700, lineHeight: 1.3 }}
+          style={{ fontSize: "1.5rem", fontWeight: 700, lineHeight: 1.25 }}
           className="text-slate-900 select-text"
         >
           {renderMathText(text)}
@@ -195,7 +195,7 @@ export default function ChunkRenderer({
         <div className="flex items-start gap-2">
           {/* Inline style guarantees heading size survives any Tailwind base reset */}
           <h2
-            style={{ fontSize: "1rem", fontWeight: 700, lineHeight: 1.35 }}
+            style={{ fontSize: "1.125rem", fontWeight: 700, lineHeight: 1.35 }}
             className="text-slate-900 select-text flex-1 tracking-tight"
           >
             {renderMathText(text)}

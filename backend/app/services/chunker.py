@@ -27,15 +27,18 @@ HEADING_SIGNALS = [
 ]
 
 CAPTION_SIGNALS = [
-    r"^(Figure|Fig\.?)\s+\d+[\.\s]",
-    r"^(Table)\s+\d+[\.\s]",
-    r"^(Figure|Fig\.?)\s+\d+\s+(shows|reveals|illustrates|displays|presents)",
+    # Only match short standalone captions: "Figure 1." or "Figure 1. Title text"
+    # NOT sentences like "Figure 2 reveals a notable divergence..."
+    r"^(Figure|Fig\.?)\s+\d+\.\s",        # "Figure 1. Some title"
+    r"^(Figure|Fig\.?)\s+\d+\.$",          # "Figure 1." alone
+    r"^(Table)\s+\d+\.\s",                 # "Table 1. Some title"
+    r"^(Table)\s+\d+\.$",                  # "Table 1." alone
 ]
 
-# Short standalone sentences that are clearly figure/table captions
-# appearing inline without a Figure N. prefix.
+# Short standalone sentences that summarize a figure without a number prefix.
+# Only match if the line is short (under 100 chars) and ends with a period.
 INLINE_CAPTION_SIGNALS = [
-    r"^(Short-form|Usage trajectories|The negative correlation|Results are presented)",
+    r"^(Short-form video dominates|Usage trajectories diverge|The negative correlation)",
 ]
 
 CITATION_SIGNALS = [
@@ -71,11 +74,14 @@ def _is_table(element: dict) -> bool:
 
 def _is_caption(element: dict) -> bool:
     text = element.get("text", "").strip()
+    # Never treat long sentences as captions -- they are body text.
+    if len(text) > 150:
+        return False
     for pattern in CAPTION_SIGNALS:
         if re.match(pattern, text, re.IGNORECASE):
             return True
-    # Short lines (under 120 chars) that match inline caption signals
-    if len(text) < 120:
+    # Short inline summary lines that act as captions
+    if len(text) < 100:
         for pattern in INLINE_CAPTION_SIGNALS:
             if re.match(pattern, text, re.IGNORECASE):
                 return True
@@ -176,6 +182,12 @@ def chunk_elements(
         chunks.append(chunk)
         chunk_index += 1
 
+    
+    for element in elements[:5]:
+        logger.info(
+            f"ELEMENT TYPE={element.get('element_type')} "
+            f"TEXT={repr(element.get('text', '')[:120])}"
+        )
     # Pre-process: split any merged heading+prose elements before the main loop.
     split_elements: list[dict] = []
     for element in elements:
