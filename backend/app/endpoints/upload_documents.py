@@ -1,5 +1,3 @@
-# backend/app/endpoints/upload_documents.py
-
 import tempfile
 import os
 import logging
@@ -8,11 +6,12 @@ from app.services.rag_service import build_index
 from typing import Literal
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from app.schemas.document import DocumentResponse, TextChunk, ParseClassification
-from app.services.pdf_engine import parse_pdf_smart
-
 from app.schemas.document import DocumentResponse, TextChunk, ParseClassification, DocumentChunk
+from app.services.pdf_engine import parse_pdf_smart
 from app.services.chunker import chunk_elements
+from app.services.pdf_parser_service import extract_pages, extract_blocks_reading_order
+from app.services.enrichment_service import enrich_chunks
+
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -23,7 +22,6 @@ MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 @router.post("/upload", response_model=DocumentResponse)
 async def upload_document(
     file: UploadFile = File(...),
-    # guidance_level comes in as a form field alongside the file
     guidance_level: Literal["light", "medium", "heavy"] = Form("medium"),
 ):
     if file.content_type != "application/pdf":
@@ -70,11 +68,53 @@ async def upload_document(
             for elem in parse_result["elements"]
         ]
 
-        # Run the chunker to produce reader-friendly chunks from the raw elements.
-        raw_chunks = chunk_elements(
-            parse_result["elements"],
-            guidance_level=guidance_level,
-        )
+        # Extract images from the PDF using PyMuPDF and merge them into
+        # the element list in reading order before chunking. Text elements
+        # from the parser already carry page_number so the interleaving is
+        # positional within each page via the bbox sort in extract_blocks_reading_order.
+        try:
+            pages = extract_pages(file_content)
+            image_blocks = [
+                block for block in extract_blocks_reading_order(pages)
+                if block["type"] == "image"
+            ]
+        except Exception as img_err:
+            logger.warning(f"Image extraction failed, continuing without images: {img_err}")
+            image_blocks = []
+
+        # Build a combined element list: text elements from the parser merged
+        # with image blocks from PyMuPDF, sorted by page then reading order.
+        # Text elements do not have a reading_order field so we sort images in
+        # after text on the same page by appending them at the page boundary.
+        text_elements = parse_result["elements"]
+
+        # Group image blocks by page for fast lookup during merge.
+        images_by_page: dict[int, list[dict]] = {}
+        for img in image_blocks:
+            page = img.get("page_number", 0)
+            images_by_page.setdefault(page, []).append(img)
+
+        # Walk text elements and splice images in whenever the page changes.
+        merged_elements: list[dict] = []
+        last_page: int | None = None
+        for elem in text_elements:
+            current_page = elem.get("page_number")
+            if last_page is not None and current_page != last_page:
+                # We have moved to a new page -- append any images from the
+                # previous page before continuing with the new page's text.
+                for img in images_by_page.pop(last_page, []):
+                    merged_elements.append(img)
+            merged_elements.append(elem)
+            last_page = current_page
+
+        # Append images from the final page and any pages with no text at all.
+        for img_list in images_by_page.values():
+            merged_elements.extend(img_list)
+
+        raw_chunks = chunk_elements(merged_elements, guidance_level=guidance_level)
+
+        # Enrich chunks with plain-English metadata and HTML table rendering
+        raw_chunks = enrich_chunks(raw_chunks)
 
         chunks = [
             DocumentChunk(
@@ -84,14 +124,20 @@ async def upload_document(
                 element_type=c["element_type"],
                 char_count=c["char_count"],
                 is_section_start=c["is_section_start"],
+                image_data=c.get("image_data"),
+                image_width=c.get("image_width"),
+                image_height=c.get("image_height"),
+                title=c.get("title"),
+                key_idea=c.get("key_idea"),
+                why_it_matters=c.get("why_it_matters"),
+                estimated_read_time_seconds=c.get("estimated_read_time_seconds"),
+                rendered_html=c.get("rendered_html"),
             )
             for c in raw_chunks
         ]
 
+
         session_id = str(uuid.uuid4())
-        build_index(session_id, raw_chunks)
-
-
         build_index(session_id, raw_chunks)
 
         return DocumentResponse(

@@ -23,6 +23,8 @@ export interface DetectionSettings {
   pauseThresholdSeconds: number;
 }
 
+type UserActivityKind = "scroll" | "pointer" | "keyboard" | "touch";
+
 interface UseBehavioralDetectionOptions {
   /** Current chunk index (from scroll tracking) */
   currentIndex: number;
@@ -34,19 +36,28 @@ interface UseBehavioralDetectionOptions {
   onSignal: (signal: DetectionSignal) => void;
 }
 
+interface RevisitStats {
+  entries: number;
+  revisits: number;
+  lastSignalledAt: number;
+  lastEnteredAt: number;
+}
+
+const REPEATED_SCROLL_THRESHOLD = 2;
+const REPEATED_SCROLL_SIGNAL_STEP = 2;
+const REPEATED_SCROLL_REENTRY_DEBOUNCE_MS = 900;
+const SLOW_PROGRESS_WINDOW_MS = 45_000;
+const SLOW_PROGRESS_MIN_ELAPSED_MS = 30_000;
+const SLOW_PROGRESS_MIN_FORWARD_CHUNKS = 2;
+const SLOW_PROGRESS_REARM_CHUNKS = 3;
+
 /**
  * Behavioral detection engine.
  *
- * Fires signals that the parent can use to show interventions.
- * Detectors are designed to **re-fire** naturally so the popup can
- * reappear after being dismissed:
- *
- *   - Pause: fires once per chunk when the user is idle for the
- *     configured threshold. Resets when the user moves to a new chunk.
- *   - Repeated scroll: fires every time a section's revisit count
- *     crosses a multiple of 2 (2nd, 4th, 6th… visit).
- *   - Slow progress: fires when forward progress stalls, re-arms
- *     automatically once the user starts moving again.
+ * Fires signals that the parent can use to show interventions:
+ *   - Pause: fires after the configured idle threshold and re-arms on user activity.
+ *   - Repeated scroll: fires when the reader has revisited the same section multiple times.
+ *   - Slow progress: fires only after a sustained low forward-progress window.
  */
 export function useBehavioralDetection({
   currentIndex,
@@ -54,35 +65,34 @@ export function useBehavioralDetection({
   settings,
   onSignal,
 }: UseBehavioralDetectionOptions) {
-  // ---- Pause detection ----
   const pauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // The chunk index for which we already fired a pause signal.
-  // Resets to -1 whenever the user scrolls to a different chunk.
-  const pauseFiredForIndexRef = useRef<number>(-1);
+  const pauseArmedRef = useRef(true);
+  const activeIndexRef = useRef(currentIndex);
 
-  // ---- Repeated scroll detection ----
-  const visitCountRef = useRef<Map<number, number>>(new Map());
-  const prevIndexRef = useRef<number>(currentIndex);
-  const lastDirectionRef = useRef<"forward" | "backward" | null>(null);
-  // Track the visit-count threshold at which we last signalled per section
-  // so we can fire again at the *next* multiple of 2.
-  const lastSignalledAtRef = useRef<Map<number, number>>(new Map());
+  const revisitStatsRef = useRef<Map<number, RevisitStats>>(new Map());
+  const lastIndexRef = useRef(currentIndex);
+  const repeatedScrollInitializedRef = useRef(false);
 
-  // ---- Slow progress detection ----
-  const highWaterMarkRef = useRef<number>(currentIndex);
-  const progressWindowRef = useRef<{ index: number; time: number }[]>([]);
-  const slowProgressFiredRef = useRef<boolean>(false);
+  const progressSamplesRef = useRef<{ index: number; time: number }[]>([]);
+  const slowProgressFiredRef = useRef(false);
+  const progressTrackingInitializedRef = useRef(false);
 
-  // Stable refs so effects don't re-run on every render
   const onSignalRef = useRef(onSignal);
-  onSignalRef.current = onSignal;
-
   const settingsRef = useRef(settings);
-  settingsRef.current = settings;
 
-  // ----------------------------------------------------------------
-  // Pause detection
-  // ----------------------------------------------------------------
+  useEffect(() => {
+    onSignalRef.current = onSignal;
+    settingsRef.current = settings;
+  }, [onSignal, settings]);
+
+  const clampIndex = useCallback(
+    (index: number) => {
+      if (totalChunks <= 0) return 0;
+      return Math.max(0, Math.min(index, totalChunks - 1));
+    },
+    [totalChunks]
+  );
+
   const clearPauseTimer = useCallback(() => {
     if (pauseTimerRef.current) {
       clearTimeout(pauseTimerRef.current);
@@ -96,11 +106,10 @@ export function useBehavioralDetection({
     if (!settingsRef.current.pauseDetectionEnabled) return;
 
     pauseTimerRef.current = setTimeout(() => {
-      const idx = prevIndexRef.current;
-      // Only fire once per chunk — resets when user scrolls to a new chunk
-      if (pauseFiredForIndexRef.current === idx) return;
-      pauseFiredForIndexRef.current = idx;
+      if (!pauseArmedRef.current) return;
+      pauseArmedRef.current = false;
 
+      const idx = activeIndexRef.current;
       onSignalRef.current({
         source: "pause",
         chunkIndex: idx,
@@ -110,116 +119,205 @@ export function useBehavioralDetection({
     }, settingsRef.current.pauseThresholdSeconds * 1000);
   }, [clearPauseTimer]);
 
-  /** Call on every user interaction (scroll, mouse-move, key) */
-  const handleUserActivity = useCallback(() => {
-    resetPauseTimer();
-  }, [resetPauseTimer]);
+  const resetProgressTracking = useCallback(
+    (index: number) => {
+      const now = Date.now();
+      progressSamplesRef.current = [{ index: clampIndex(index), time: now }];
+      slowProgressFiredRef.current = false;
+    },
+    [clampIndex]
+  );
 
-  // When the user scrolls to a new chunk, allow pause to fire again there
-  // and restart the timer.
+  const initializeRepeatedScrollTracking = useCallback(
+    (index: number) => {
+      const safeIndex = clampIndex(index);
+      revisitStatsRef.current = new Map([
+        [
+          safeIndex,
+          {
+            entries: 1,
+            revisits: 0,
+            lastSignalledAt: 0,
+            lastEnteredAt: Date.now(),
+          },
+        ],
+      ]);
+      lastIndexRef.current = safeIndex;
+    },
+    [clampIndex]
+  );
+
+  const handleUserActivity = useCallback(
+    (kind: UserActivityKind = "pointer") => {
+      void kind;
+      pauseArmedRef.current = true;
+      resetPauseTimer();
+    },
+    [resetPauseTimer]
+  );
+
   useEffect(() => {
-    if (currentIndex !== prevIndexRef.current) {
-      pauseFiredForIndexRef.current = -1; // new chunk → allow pause again
-    }
+    activeIndexRef.current = clampIndex(currentIndex);
+  }, [clampIndex, currentIndex]);
+
+  useEffect(() => {
+    pauseArmedRef.current = true;
     resetPauseTimer();
-    // prevIndexRef is updated in the repeated-scroll effect below
   }, [currentIndex, resetPauseTimer]);
 
-  // ----------------------------------------------------------------
-  // Repeated scroll detection
-  // ----------------------------------------------------------------
   useEffect(() => {
-    if (!settings.repeatedScrollingEnabled) {
-      prevIndexRef.current = currentIndex;
+    if (!settings.pauseDetectionEnabled) {
+      pauseArmedRef.current = false;
+      clearPauseTimer();
       return;
     }
 
-    const prev = prevIndexRef.current;
-    const direction =
-      currentIndex > prev
-        ? "forward"
-        : currentIndex < prev
-        ? "backward"
-        : null;
+    pauseArmedRef.current = true;
+    resetPauseTimer();
+  }, [
+    clearPauseTimer,
+    resetPauseTimer,
+    settings.pauseDetectionEnabled,
+    settings.pauseThresholdSeconds,
+  ]);
 
-    if (direction) {
-      const reversed =
-        lastDirectionRef.current !== null &&
-        direction !== lastDirectionRef.current;
-      lastDirectionRef.current = direction;
-
-      if (reversed || direction === "backward") {
-        const visits = visitCountRef.current;
-        const count = (visits.get(currentIndex) ?? 0) + 1;
-        visits.set(currentIndex, count);
-
-        // Fire every time count crosses the next multiple of 2
-        const lastThreshold = lastSignalledAtRef.current.get(currentIndex) ?? 0;
-        if (count >= lastThreshold + 2) {
-          lastSignalledAtRef.current.set(currentIndex, count);
-          onSignalRef.current({
-            source: "repeated_scroll",
-            chunkIndex: currentIndex,
-            detail: `User revisited chunk ${currentIndex} (${count} visits)`,
-            timestamp: Date.now(),
-          });
-        }
-      }
+  useEffect(() => {
+    if (!settings.repeatedScrollingEnabled) {
+      revisitStatsRef.current.clear();
+      lastIndexRef.current = clampIndex(currentIndex);
+      repeatedScrollInitializedRef.current = false;
+      return;
     }
 
-    prevIndexRef.current = currentIndex;
-  }, [currentIndex, settings.repeatedScrollingEnabled]);
+    if (repeatedScrollInitializedRef.current) return;
 
-  // ----------------------------------------------------------------
-  // Slow progress detection
-  // ----------------------------------------------------------------
+    initializeRepeatedScrollTracking(currentIndex);
+    repeatedScrollInitializedRef.current = true;
+  }, [
+    clampIndex,
+    currentIndex,
+    initializeRepeatedScrollTracking,
+    settings.repeatedScrollingEnabled,
+  ]);
+
+  useEffect(() => {
+    if (!settings.repeatedScrollingEnabled) return;
+
+    const nextIndex = clampIndex(currentIndex);
+    const prevIndex = lastIndexRef.current;
+    if (nextIndex === prevIndex) return;
+
+    const now = Date.now();
+    const currentStats = revisitStatsRef.current.get(nextIndex) ?? {
+      entries: 0,
+      revisits: 0,
+      lastSignalledAt: 0,
+      lastEnteredAt: 0,
+    };
+
+    if (
+      currentStats.entries > 0 &&
+      now - currentStats.lastEnteredAt >= REPEATED_SCROLL_REENTRY_DEBOUNCE_MS
+    ) {
+      currentStats.revisits += 1;
+    }
+
+    currentStats.entries += 1;
+    currentStats.lastEnteredAt = now;
+    revisitStatsRef.current.set(nextIndex, currentStats);
+
+    if (
+      currentStats.revisits >= REPEATED_SCROLL_THRESHOLD &&
+      currentStats.revisits >=
+        currentStats.lastSignalledAt + REPEATED_SCROLL_SIGNAL_STEP
+    ) {
+      currentStats.lastSignalledAt = currentStats.revisits;
+      onSignalRef.current({
+        source: "repeated_scroll",
+        chunkIndex: nextIndex,
+        detail: `User revisited chunk ${nextIndex} ${currentStats.revisits} times`,
+        timestamp: now,
+      });
+    }
+
+    lastIndexRef.current = nextIndex;
+  }, [clampIndex, currentIndex, settings.repeatedScrollingEnabled]);
+
+  useEffect(() => {
+    if (!settings.progressTrackingEnabled) {
+      progressSamplesRef.current = [];
+      slowProgressFiredRef.current = false;
+      progressTrackingInitializedRef.current = false;
+      return;
+    }
+
+    if (progressTrackingInitializedRef.current) return;
+
+    resetProgressTracking(currentIndex);
+    progressTrackingInitializedRef.current = true;
+  }, [
+    currentIndex,
+    resetProgressTracking,
+    settings.progressTrackingEnabled,
+  ]);
+
   useEffect(() => {
     if (!settings.progressTrackingEnabled) return;
 
-    if (currentIndex > highWaterMarkRef.current) {
-      highWaterMarkRef.current = currentIndex;
-    }
-
+    const nextIndex = clampIndex(currentIndex);
     const now = Date.now();
-    const win = progressWindowRef.current;
+    const samples = progressSamplesRef.current;
+    const lastSample = samples[samples.length - 1];
 
-    win.push({ index: currentIndex, time: now });
-
-    // Keep only the last 60 seconds
-    const cutoff = now - 60_000;
-    while (win.length > 0 && win[0].time < cutoff) {
-      win.shift();
+    if (!lastSample) {
+      progressSamplesRef.current = [{ index: nextIndex, time: now }];
+      return;
     }
 
-    if (win.length < 2) return;
-    const elapsed = (now - win[0].time) / 1000;
-    if (elapsed < 30) return;
+    if (nextIndex < lastSample.index) {
+      resetProgressTracking(nextIndex);
+      return;
+    }
 
-    const forwardChunks = highWaterMarkRef.current - win[0].index;
+    if (nextIndex === lastSample.index) return;
+
+    samples.push({ index: nextIndex, time: now });
+
+    const cutoff = now - SLOW_PROGRESS_WINDOW_MS;
+    while (samples.length > 0 && samples[0].time < cutoff) {
+      samples.shift();
+    }
+
+    if (samples.length < 2) return;
+
+    const elapsed = now - samples[0].time;
+    const forwardProgress = nextIndex - samples[0].index;
 
     if (
-      forwardChunks < 2 &&
-      highWaterMarkRef.current >= 3 &&
+      elapsed >= SLOW_PROGRESS_MIN_ELAPSED_MS &&
+      forwardProgress < SLOW_PROGRESS_MIN_FORWARD_CHUNKS &&
+      nextIndex >= SLOW_PROGRESS_REARM_CHUNKS &&
       !slowProgressFiredRef.current
     ) {
       slowProgressFiredRef.current = true;
       onSignalRef.current({
         source: "slow_progress",
-        chunkIndex: currentIndex,
-        detail: `User advanced only ${forwardChunks} chunks in ${Math.round(elapsed)}s`,
-        timestamp: Date.now(),
+        chunkIndex: nextIndex,
+        detail: `User advanced only ${forwardProgress} chunks in ${Math.round(elapsed / 1000)}s`,
+        timestamp: now,
       });
     }
 
-    // Re-arm once the user starts moving forward again
-    if (forwardChunks >= 3) {
-      slowProgressFiredRef.current = false;
+    if (forwardProgress >= SLOW_PROGRESS_REARM_CHUNKS) {
+      resetProgressTracking(nextIndex);
     }
-  }, [currentIndex, settings.progressTrackingEnabled]);
+  }, [
+    clampIndex,
+    currentIndex,
+    resetProgressTracking,
+    settings.progressTrackingEnabled,
+  ]);
 
-  // ----------------------------------------------------------------
-  // Cleanup
-  // ----------------------------------------------------------------
   useEffect(() => {
     return () => clearPauseTimer();
   }, [clearPauseTimer]);

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { X } from "lucide-react";
+import type { DetectionSignal } from "../hooks/useBehavioralDetection";
 
 // Single chat message
 interface Message {
@@ -31,6 +32,7 @@ interface RightPanelProps {
   onTextSizeChange: (value: string) => void;
   interventionsEnabled: boolean;
   onInterventionsEnabledChange: (value: boolean) => void;
+  lastDetectionSignal: DetectionSignal | null;
 }
 
 // Welcome message before the user sends anything
@@ -41,7 +43,7 @@ const WELCOME_MESSAGE: Message = {
 };
 
 export default function RightPanel({
-  documentTitle: _documentTitle,
+  documentTitle,
   currentPage,
   totalPages,
   guidanceLevel,
@@ -61,7 +63,10 @@ export default function RightPanel({
   onTextSizeChange,
   interventionsEnabled,
   onInterventionsEnabledChange,
+  lastDetectionSignal,
 }: RightPanelProps) {
+  void documentTitle;
+  void lastDetectionSignal;
   const [activeTab, setActiveTab] = useState<"chat" | "settings">("chat");
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [inputValue, setInputValue] = useState("");

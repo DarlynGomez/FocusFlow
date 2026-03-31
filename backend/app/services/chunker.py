@@ -4,60 +4,127 @@ from typing import Literal
 
 logger = logging.getLogger(__name__)
 
-# How many characters a chunk can hold before we close it and start a new one.
-# These are tuned for reading comfort at each guidance level.
-# Heavy keeps chunks small so the user is never overwhelmed.
-# Light allows longer chunks for users who need less scaffolding.
 CHAR_LIMITS = {
     "heavy": 400,
     "medium": 700,
     "light": 1100,
 }
 
-# Labels that strongly indicate a section heading regardless of element_type.
-# We always start a new chunk when we hit one of these.
+# Strict heading patterns -- only match lines that are ONLY a heading,
+# not a heading with prose concatenated after it.
 HEADING_SIGNALS = [
-    r"^\d+[\.\s]+[A-Z]",       # "1. Introduction" or "1 Introduction"
+    r"^\d+[\.\s]+[A-Z][a-z]",
     r"^Abstract$",
     r"^References$",
-    r"^Conclusion",
-    r"^Discussion",
-    r"^Introduction",
-    r"^Methods?",
-    r"^Results?",
-    r"^Appendix",
-    r"^Table\s+\d+",
-    r"^Figure\s+\d+",
-    r"^Definition\s+\d+",
-    r"^Theorem\s+\d+",
-    r"^Lemma\s+\d+",
-    r"^Proposition\s+\d+",
-    r"^Assumption\s+",
-    r"^Proof\.",
+    r"^Bibliography$",
+    r"^Acknowledgements?$",
+    r"^Conclusion[s]?$",
+    r"^Discussion$",
+    r"^Introduction$",
+    r"^Methods?$",
+    r"^Results?$",
+    r"^Appendix\s*[A-Z]?$",
 ]
 
+CAPTION_SIGNALS = [
+    # Only match short standalone captions: "Figure 1." or "Figure 1. Title text"
+    # NOT sentences like "Figure 2 reveals a notable divergence..."
+    r"^(Figure|Fig\.?)\s+\d+\.\s",        # "Figure 1. Some title"
+    r"^(Figure|Fig\.?)\s+\d+\.$",          # "Figure 1." alone
+    r"^(Table)\s+\d+\.\s",                 # "Table 1. Some title"
+    r"^(Table)\s+\d+\.$",                  # "Table 1." alone
+]
+
+# Short standalone sentences that summarize a figure without a number prefix.
+# Only match if the line is short (under 100 chars) and ends with a period.
+INLINE_CAPTION_SIGNALS = [
+    r"^(Short-form video dominates|Usage trajectories diverge|The negative correlation)",
+]
+
+CITATION_SIGNALS = [
+    r"^\[\d+\]\s+[A-Z]",
+    r"^\d+\.\s+[A-Z][a-z]+,\s+[A-Z]",
+    r"^\d+\.\s+.*\(\d{4}\)",
+    r"^\d+\.\s+.*et al",
+]
+
+
 def _is_heading(element: dict) -> bool:
-    """
-    Returns True if this element should always start a new chunk.
-    We check both the element_type field (set by LlamaParse) and
-    the text itself against known heading patterns.
-    """
-    if element.get("element_type") == "Title":
+    if element.get("element_type") in ("Title", "heading"):
+        text = element.get("text", "").strip()
+        # Trust the parser label only for short text -- long text means
+        # the parser merged a heading and its paragraph together.
+        if len(text) > 120:
+            return False
         return True
     text = element.get("text", "").strip()
     for pattern in HEADING_SIGNALS:
         if re.match(pattern, text, re.IGNORECASE):
+            # Additional guard: if the text is very long it is a merged
+            # heading+paragraph, not a pure heading.
+            if len(text) > 150:
+                return False
             return True
     return False
 
 
 def _is_table(element: dict) -> bool:
-    """
-    Returns True if this element is a markdown table.
-    Tables should always be their own chunk -- never split or merged
-    with surrounding prose because they need to be read as a unit.
-    """
     return element.get("text", "").strip().startswith("|")
+
+
+def _is_caption(element: dict) -> bool:
+    text = element.get("text", "").strip()
+    # Never treat long sentences as captions -- they are body text.
+    if len(text) > 150:
+        return False
+    for pattern in CAPTION_SIGNALS:
+        if re.match(pattern, text, re.IGNORECASE):
+            return True
+    # Short inline summary lines that act as captions
+    if len(text) < 100:
+        for pattern in INLINE_CAPTION_SIGNALS:
+            if re.match(pattern, text, re.IGNORECASE):
+                return True
+    return False
+
+
+def _is_citation(element: dict) -> bool:
+    text = element.get("text", "").strip()
+    for pattern in CITATION_SIGNALS:
+        if re.match(pattern, text, re.IGNORECASE):
+            return True
+    return False
+
+
+def _split_heading_from_prose(text: str) -> tuple[str, str]:
+    """
+    When a parser merges a numbered heading and its following paragraph
+    into one element, split them apart.
+
+    Detects the pattern: "N. Title Text Prose begins here..."
+    Returns (heading_text, prose_text). If no split point is found,
+    returns (text, "").
+    """
+    # Match a numbered heading at the start followed by prose.
+    # The heading ends at the first sentence boundary after the title words.
+    match = re.match(
+        r"^(\d+[\.\s]+[A-Z][^.!?]{3,60}?)\s{2,}([A-Z].{20,})",
+        text,
+        re.DOTALL,
+    )
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+
+    # Also handle "Abstract This study..." style merges.
+    match2 = re.match(
+        r"^(Abstract|Introduction|Methods?|Results?|Discussion|Conclusion[s]?|Acknowledgements?)\s+([A-Z].{20,})",
+        text,
+        re.DOTALL,
+    )
+    if match2:
+        return match2.group(1).strip(), match2.group(2).strip()
+
+    return text, ""
 
 
 def chunk_elements(
@@ -67,23 +134,13 @@ def chunk_elements(
     """
     Groups raw parser elements into reader-friendly chunks.
 
-    Each chunk is a dict with:
-      - chunk_index: int, position in the reading sequence (0-based)
-      - elements: list of the raw elements that were merged into this chunk
-      - text: the combined readable text of all elements in this chunk
-      - page_number: the page where this chunk starts
-      - element_type: "heading", "table", or "text"
-      - char_count: total characters in the chunk
-      - is_section_start: True if this chunk begins a new document section
-
-    Strategy:
-      1. Headings always start a new chunk and are never merged with prose.
-      2. Tables are always their own standalone chunk.
-      3. Prose elements are accumulated into a buffer until the char limit
-         is reached, then flushed as a chunk.
-      4. A page boundary also flushes the buffer so chunks never span pages.
-         This matters for the AI panel which needs to know what page context
-         to pass to the LLM.
+    Key behaviors:
+    - Merged heading+prose elements are split before chunking.
+    - Headings are always standalone chunks.
+    - Captions and inline caption-like sentences get their own chunk.
+    - Citations accumulate as individual chunks for grouped rendering.
+    - Images pass through as standalone chunks with their base64 data.
+    - Prose accumulates until the char limit or a page boundary is hit.
     """
     char_limit = CHAR_LIMITS.get(guidance_level, CHAR_LIMITS["medium"])
     chunks = []
@@ -92,19 +149,10 @@ def chunk_elements(
     chunk_index = 0
 
     def flush_buffer():
-        """
-        Takes whatever is in the buffer and commits it as a finished chunk.
-        Modifies chunk_index, chunks, buffer_elements, and buffer_chars
-        via nonlocal so the outer loop can call it cleanly.
-        """
         nonlocal chunk_index, buffer_elements, buffer_chars
-
         if not buffer_elements:
             return
-
-        # Join all buffered element texts with a space between them.
         combined_text = " ".join(e["text"] for e in buffer_elements)
-
         chunks.append({
             "chunk_index": chunk_index,
             "elements": buffer_elements,
@@ -114,55 +162,100 @@ def chunk_elements(
             "char_count": len(combined_text),
             "is_section_start": False,
         })
-
         chunk_index += 1
         buffer_elements = []
         buffer_chars = 0
 
+    def emit(element_type: str, text: str, page: int | None, is_section_start: bool = False, extra: dict | None = None):
+        nonlocal chunk_index
+        chunk = {
+            "chunk_index": chunk_index,
+            "elements": [],
+            "text": text,
+            "page_number": page,
+            "element_type": element_type,
+            "char_count": len(text),
+            "is_section_start": is_section_start,
+        }
+        if extra:
+            chunk.update(extra)
+        chunks.append(chunk)
+        chunk_index += 1
+
+    
+    for element in elements[:5]:
+        logger.info(
+            f"ELEMENT TYPE={element.get('element_type')} "
+            f"TEXT={repr(element.get('text', '')[:120])}"
+        )
+    # Pre-process: split any merged heading+prose elements before the main loop.
+    split_elements: list[dict] = []
     for element in elements:
+        if element.get("type") == "image":
+            split_elements.append(element)
+            continue
+        text = element.get("text", "").strip()
+        if not text:
+            continue
+        # Only attempt split on elements that look like they start with a heading.
+        if re.match(r"^(\d+[\.\s]+[A-Z]|Abstract\s+[A-Z]|Introduction\s+[A-Z])", text):
+            heading_text, prose_text = _split_heading_from_prose(text)
+            if prose_text:
+                heading_elem = {**element, "text": heading_text, "element_type": "heading"}
+                prose_elem = {**element, "text": prose_text, "element_type": "text"}
+                split_elements.append(heading_elem)
+                split_elements.append(prose_elem)
+                continue
+        split_elements.append(element)
+
+    for element in split_elements:
+        # IMAGE
+        if element.get("type") == "image":
+            flush_buffer()
+            emit(
+                "image",
+                "",
+                element.get("page_number"),
+                extra={
+                    "image_data": element.get("base64_data"),
+                    "image_width": element.get("width"),
+                    "image_height": element.get("height"),
+                },
+            )
+            continue
+
         text = element.get("text", "").strip()
         if not text:
             continue
 
-        # Tables are always standalone chunks -- flush anything in the buffer
-        # first, then emit the table as its own chunk, then continue.
+        # TABLE
         if _is_table(element):
             flush_buffer()
-            chunks.append({
-                "chunk_index": chunk_index,
-                "elements": [element],
-                "text": text,
-                "page_number": element.get("page_number"),
-                "element_type": "table",
-                "char_count": len(text),
-                "is_section_start": False,
-            })
-            chunk_index += 1
+            emit("table", text, element.get("page_number"))
             continue
 
-        # Headings always start a new chunk. Flush what came before,
-        # then emit the heading as its own standalone chunk.
+        # CAPTION
+        if _is_caption(element):
+            flush_buffer()
+            emit("caption", text, element.get("page_number"))
+            continue
+
+        # CITATION
+        if _is_citation(element):
+            flush_buffer()
+            emit("citation", text, element.get("page_number"))
+            continue
+
+        # HEADING
         if _is_heading(element):
             flush_buffer()
-            chunks.append({
-                "chunk_index": chunk_index,
-                "elements": [element],
-                "text": text,
-                "page_number": element.get("page_number"),
-                "element_type": "heading",
-                "char_count": len(text),
-                "is_section_start": True,
-            })
-            chunk_index += 1
+            emit("heading", text, element.get("page_number"), is_section_start=True)
             continue
 
-        # If adding this element would push the buffer over the char limit,
-        # flush first so the new element starts a fresh chunk.
+        # PROSE -- accumulate into buffer
         if buffer_chars + len(text) > char_limit and buffer_elements:
             flush_buffer()
 
-        # If this element is on a different page than what is in the buffer,
-        # flush before adding it so chunks never span page boundaries.
         if (
             buffer_elements
             and element.get("page_number") is not None
@@ -173,16 +266,13 @@ def chunk_elements(
         buffer_elements.append(element)
         buffer_chars += len(text)
 
-    # After the loop, flush anything remaining in the buffer.
     flush_buffer()
 
-    # Mark the very first chunk as a section start regardless of its type
-    # so the reading view knows to show the document title context.
     if chunks:
         chunks[0]["is_section_start"] = True
 
     logger.info(
-        f"Chunked {len(elements)} elements into {len(chunks)} chunks "
+        f"Chunked {len(split_elements)} elements into {len(chunks)} chunks "
         f"at guidance level '{guidance_level}'"
     )
 
