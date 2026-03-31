@@ -13,9 +13,16 @@ interface GuidanceOptionProps {
   onClick: () => void;
 }
 
-export default function GuidanceOption({ id: _id, title, description, selected, onClick }: GuidanceOptionProps) {
+export default function GuidanceOption({
+  id,
+  title,
+  description,
+  selected,
+  onClick,
+}: GuidanceOptionProps) {
   return (
     <div
+      data-guidance-id={id}
       onClick={onClick}
       className={cn(
         "flex items-center gap-4 p-4 rounded-lg border-2 cursor-pointer transition-all duration-200",

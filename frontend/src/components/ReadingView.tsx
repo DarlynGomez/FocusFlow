@@ -9,6 +9,10 @@ import {
   BookOpen,
 } from "lucide-react";
 import RightPanel from "./RightPanel";
+import {
+  useBehavioralDetection,
+  type DetectionSignal,
+} from "../hooks/useBehavioralDetection";
 import ChunkRenderer from "./ChunkRenderer";
 import BookmarksPanel from "./BookmarksPanel";
 import ReadingToolbar from "./ReadingToolbar";
@@ -65,40 +69,77 @@ interface ReadingLocationState {
   guidanceLevel: string;
 }
 
+const SIGNAL_MESSAGES: Record<
+  string,
+  { heading: string; subtext: string }
+> = {
+  pause: {
+    heading: "You seem to be pausing here",
+    subtext: "Would you like an AI explanation of this section?",
+  },
+  repeated_scroll: {
+    heading: "You've re-read this section a few times",
+    subtext: "Want help understanding this part?",
+  },
+  slow_progress: {
+    heading: "This section seems challenging",
+    subtext: "Would you like a summary or explanation?",
+  },
+};
+
+const DEFAULT_SIGNAL_MESSAGE = {
+  heading: "Looks like you might need some help",
+  subtext: "Would you like an AI explanation of this section?",
+};
+
+/**
+ * Intervention popup with three actions:
+ *   X  (top-right)      → close this instance; future signals can still show it
+ *   "Don't show again"  → permanently disable intervention popups
+ *   "Get help"          → open the AI panel
+ */
 function InterventionPopup({
-  onDismiss,
+  onClose,
+  onNeverShowAgain,
   onAccept,
+  signalSource,
 }: {
-  onDismiss: () => void;
+  onClose: () => void;
+  onNeverShowAgain: () => void;
   onAccept: () => void;
+  signalSource?: string | null;
 }) {
+  const msg =
+    (signalSource && SIGNAL_MESSAGES[signalSource]) || DEFAULT_SIGNAL_MESSAGE;
+
   return (
-    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 w-72 bg-white border border-indigo-200 rounded-2xl shadow-lg shadow-indigo-100 p-4 flex flex-col gap-3 animate-slide-up">
+    <div className="z-20 w-full max-w-sm bg-white/95 backdrop-blur border border-indigo-200 rounded-2xl shadow-lg shadow-indigo-100 p-4 flex flex-col gap-3 animate-slide-up">
       <div className="flex items-start gap-3">
         <div className="shrink-0 w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center">
           <Lightbulb className="w-4 h-4 text-indigo-500" />
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-slate-800 leading-snug">
-            Looks like you might need some help
+            {msg.heading}
           </p>
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-            Would you like an AI explanation of this section?
+            {msg.subtext}
           </p>
         </div>
         <button
-          onClick={onDismiss}
+          onClick={onClose}
           className="shrink-0 p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+          aria-label="Close popup"
         >
           <X className="w-3.5 h-3.5" />
         </button>
       </div>
       <div className="flex gap-2">
         <button
-          onClick={onDismiss}
+          onClick={onNeverShowAgain}
           className="flex-1 py-1.5 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
         >
-          Dismiss
+          Don't show again
         </button>
         <button
           onClick={onAccept}
@@ -129,20 +170,186 @@ export default function ReadingView() {
   const chunkRefs = useRef<(HTMLDivElement | null)[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const readingContentRef = useRef<HTMLDivElement>(null);
-  const interventionFiredRef = useRef(false);
   const isDragging = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Bookmarks hook -- session_id may be undefined if state is null,
-  // but the hook is always called; it just operates on an empty string.
-  const { bookmarks, addBookmark, deleteBookmark, isBookmarked } = useBookmarks(
-    state?.document?.session_id ?? ""
+  // ── Behavioral detection state ──
+  const [showCooldownToast, setShowCooldownToast] = useState(false);
+  const cooldownToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
   );
 
-  const jumpToChunk = useCallback((chunkIndex: number) => {
-    const el = chunkRefs.current[chunkIndex];
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  // Master switch: when false, popups never appear.
+  // "Don't show again" sets this to false; Settings toggle re-enables it.
+  const [interventionsEnabled, setInterventionsEnabled] = useState(true);
+
+  // Cooldown: after user dismisses a popup (X), block new popups for this
+  // many ms so we don't nag them. Cleared on unmount.
+  const COOLDOWN_MS = 50_000;
+  const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isCoolingDownRef = useRef(false);
+
+  // Display settings (lifted from RightPanel so ReadingView can apply them)
+  const [textSize, setTextSize] = useState("medium");
+
+  // Behavioral detection settings (lifted from RightPanel so detectors can read them)
+  const [pauseThreshold, setPauseThreshold] = useState(5);
+  const [pauseDetection, setPauseDetection] = useState(true);
+  const [repeatedScrolling, setRepeatedScrolling] = useState(true);
+  const [progressTracking, setProgressTracking] = useState(true);
+  const [lastSignal, setLastSignal] = useState<DetectionSignal | null>(null);
+  const [popupSignal, setPopupSignal] = useState<DetectionSignal | null>(null);
+  const [popupAnchorTop, setPopupAnchorTop] = useState<number | null>(null);
+
+  // Last detection signal — tells the popup which message to show
+  const contentItems = state?.document
+    ? state.document.chunks?.length
+      ? state.document.chunks
+      : state.document.elements
+    : [];
+  const readingItemsWithIndex = contentItems
+    .map((item, originalIndex) => ({ item, originalIndex }))
+    .filter(
+      ({ item }) => (item as DocumentChunk).element_type !== "citation"
+    );
+  const totalChunks = readingItemsWithIndex.length;
+  const boundedDetectionIndex =
+    totalChunks > 0
+      ? Math.max(0, Math.min(currentIndex, totalChunks - 1))
+      : 0;
+
+  // Ref to read the latest interventionsEnabled without re-creating the callback
+  const interventionsEnabledRef = useRef(interventionsEnabled);
+  const showInterventionRef = useRef(showIntervention);
+  const currentDetectionIndexRef = useRef(boundedDetectionIndex);
+  const pendingSignalRef = useRef<DetectionSignal | null>(null);
+
+  const showSignalPopup = (signal: DetectionSignal) => {
+    setPopupSignal(signal);
+    setShowIntervention(true);
+  };
+
+  useEffect(() => {
+    interventionsEnabledRef.current = interventionsEnabled;
+    showInterventionRef.current = showIntervention;
+    currentDetectionIndexRef.current = boundedDetectionIndex;
+  }, [boundedDetectionIndex, interventionsEnabled, showIntervention]);
+
+  const isSignalRelevant = (signal: DetectionSignal) => {
+    return Math.abs(signal.chunkIndex - currentDetectionIndexRef.current) <= 1;
+  };
+
+  const handleDetectionSignal = (signal: DetectionSignal) => {
+    setLastSignal(signal);
+
+    if (!interventionsEnabledRef.current) return;
+
+    if (isCoolingDownRef.current) {
+      pendingSignalRef.current = signal;
+      return;
+    }
+
+    if (!showInterventionRef.current) {
+      showSignalPopup(signal);
+    }
+  };
+
+  const startCooldown = () => {
+    pendingSignalRef.current = null;
+    isCoolingDownRef.current = true;
+    if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+    cooldownTimerRef.current = setTimeout(() => {
+      isCoolingDownRef.current = false;
+      cooldownTimerRef.current = null;
+
+      const pendingSignal = pendingSignalRef.current;
+      pendingSignalRef.current = null;
+
+      if (
+        pendingSignal &&
+        interventionsEnabledRef.current &&
+        !showInterventionRef.current &&
+        isSignalRelevant(pendingSignal)
+      ) {
+        showSignalPopup(pendingSignal);
+      }
+    }, COOLDOWN_MS);
+  };
+
+  // Clean up timers on unmount
+  useEffect(() => {
+    return () => {
+      if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+      if (cooldownToastTimerRef.current)
+        clearTimeout(cooldownToastTimerRef.current);
+      pendingSignalRef.current = null;
+    };
   }, []);
+
+  const handleInterventionsEnabledChange = (value: boolean) => {
+    setInterventionsEnabled(value);
+    if (!value) {
+      pendingSignalRef.current = null;
+      isCoolingDownRef.current = false;
+      if (cooldownTimerRef.current) {
+        clearTimeout(cooldownTimerRef.current);
+        cooldownTimerRef.current = null;
+      }
+      setShowIntervention(false);
+      setPopupSignal(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!showIntervention || popupSignal == null) return;
+
+    let frameId = 0;
+    const updatePopupAnchor = () => {
+      const targetEl = chunkRefs.current[popupSignal.chunkIndex];
+      if (!targetEl) {
+        frameId = window.requestAnimationFrame(() => {
+          setPopupAnchorTop(null);
+        });
+        return;
+      }
+
+      frameId = window.requestAnimationFrame(() => {
+        setPopupAnchorTop(Math.max(0, targetEl.offsetTop + 16));
+      });
+    };
+
+    updatePopupAnchor();
+    window.addEventListener("resize", updatePopupAnchor);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.removeEventListener("resize", updatePopupAnchor);
+    };
+  }, [isPanelOpen, popupSignal, showIntervention, textSize]);
+
+  const { handleUserActivity } = useBehavioralDetection({
+    currentIndex: boundedDetectionIndex,
+    totalChunks,
+    settings: {
+      pauseDetectionEnabled: pauseDetection,
+      repeatedScrollingEnabled: repeatedScrolling,
+      progressTrackingEnabled: progressTracking,
+      pauseThresholdSeconds: pauseThreshold,
+    },
+    onSignal: handleDetectionSignal,
+  });
+
+  // Bookmarks hook -- session_id may be undefined if state is null,
+  // but the hook is always called; it just operates on an empty string.
+  const { bookmarks, addBookmark, deleteBookmark, isBookmarked } =
+    useBookmarks(state?.document?.session_id ?? "");
+
+  const jumpToChunk = (chunkIndex: number) => {
+    const displayIndex = readingItemsWithIndex.findIndex(
+      ({ originalIndex }) => originalIndex === chunkIndex
+    );
+    const el = displayIndex >= 0 ? chunkRefs.current[displayIndex] : null;
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   useEffect(() => {
     if (!state || !state.document) {
@@ -150,23 +357,34 @@ export default function ReadingView() {
     }
   }, [state, navigate]);
 
-  const handleScroll = useCallback(() => {
+  const handleScroll = () => {
     const container = scrollRef.current;
     if (!container) return;
+
+    // When the user is at or near the top of the document, nothing should
+    // be faded — the reading line logic would otherwise grey-out short
+    // chunks (headings, first paragraphs) that naturally sit above the 35%
+    // mark even though the user hasn't scrolled past them.
+    const scrollTop = container.scrollTop;
+    if (scrollTop < 80) {
+      setCurrentIndex(0);
+      handleUserActivity("scroll");
+      return;
+    }
+
     const containerTop = container.getBoundingClientRect().top;
     const readingLine = containerTop + container.clientHeight * 0.35;
     let newIndex = 0;
-    for (let i = 0; i < chunkRefs.current.length; i++) {
+    for (let i = 0; i < readingItemsWithIndex.length; i++) {
       const el = chunkRefs.current[i];
       if (!el) continue;
       if (el.getBoundingClientRect().bottom < readingLine) newIndex = i + 1;
     }
     setCurrentIndex(newIndex);
-    if (newIndex >= 5 && !interventionFiredRef.current) {
-      interventionFiredRef.current = true;
-      setShowIntervention(true);
-    }
-  }, []);
+
+    // Reset the pause timer on every scroll event
+    handleUserActivity("scroll");
+  };
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!isDragging.current || !containerRef.current) return;
@@ -192,23 +410,68 @@ export default function ReadingView() {
     };
   }, [handleMouseMove, handleMouseUp]);
 
+  // Reset the pause timer only for deliberate reading actions.
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const onPointerActivity = () => handleUserActivity("pointer");
+    const onWheelActivity = () => handleUserActivity("scroll");
+    const onTouchActivity = () => handleUserActivity("touch");
+
+    container.addEventListener("pointerdown", onPointerActivity);
+    container.addEventListener("wheel", onWheelActivity, { passive: true });
+    container.addEventListener("touchstart", onTouchActivity, {
+      passive: true,
+    });
+    return () => {
+      container.removeEventListener("pointerdown", onPointerActivity);
+      container.removeEventListener("wheel", onWheelActivity);
+      container.removeEventListener("touchstart", onTouchActivity);
+    };
+  }, [handleUserActivity]);
+
   // ── Guard -- render nothing until state is confirmed present ──
   if (!state || !state.document) return null;
 
   const { document: parsedDoc } = state;
 
-  const contentItems = parsedDoc.chunks?.length
-    ? parsedDoc.chunks
-    : parsedDoc.elements;
+  // Map the text-size setting to Tailwind classes
+  const textSizeClasses: Record<
+    string,
+    { body: string; heading: string; table: string }
+  > = {
+    small: {
+      body: "text-xs",
+      heading: "text-sm font-semibold",
+      table: "text-[10px]",
+    },
+    medium: {
+      body: "text-sm",
+      heading: "text-base font-semibold",
+      table: "text-xs",
+    },
+    large: {
+      body: "text-base",
+      heading: "text-lg font-semibold",
+      table: "text-sm",
+    },
+  };
+  const sizeClass = textSizeClasses[textSize] ?? textSizeClasses.medium;
 
-  const currentItem = contentItems[currentIndex];
+  const boundedCurrentIndex =
+    readingItemsWithIndex.length > 0
+      ? Math.max(0, Math.min(currentIndex, readingItemsWithIndex.length - 1))
+      : 0;
+
+  const currentItem = readingItemsWithIndex[boundedCurrentIndex]?.item;
 
   const currentChunkIndex = parsedDoc.chunks?.length
-    ? (currentItem as DocumentChunk)?.chunk_index ?? currentIndex
-    : currentIndex;
+    ? (currentItem as DocumentChunk)?.chunk_index ?? boundedCurrentIndex
+    : boundedCurrentIndex;
 
   const currentPage =
-    (contentItems[currentIndex] as DocumentChunk)?.page_number ?? 1;
+    (currentItem as DocumentChunk | undefined)?.page_number ?? 1;
 
   const totalPages = contentItems.reduce((max, item) => {
     const page = (item as DocumentChunk).page_number ?? 1;
@@ -219,9 +482,7 @@ export default function ReadingView() {
     (item) => (item as DocumentChunk).element_type === "citation"
   );
 
-  const nonCitationItemsWithIndex = contentItems
-    .map((item, originalIndex) => ({ item, originalIndex }))
-    .filter(({ item }) => (item as DocumentChunk).element_type !== "citation");
+  const nonCitationItemsWithIndex = readingItemsWithIndex;
 
   const handleDownload = () => {
     const chunkToHtml = (chunk: DocumentChunk): string => {
@@ -296,25 +557,11 @@ export default function ReadingView() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-88px)]">
-      {/* Top bar */}
-      {/* <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-slate-200 shrink-0">
-        <div>
-          <h1 className="text-base font-semibold text-slate-900 truncate max-w-lg">
-            {parsedDoc.filename}
-          </h1>
-          <p className="text-xs text-slate-400 mt-0.5">
-            {parsedDoc.total_elements} sections ·{" "}
-            {parsedDoc.classification.parser_used} parser ·{" "}
-            <span className="capitalize">{guidanceLevel}</span> guidance
-          </p>
-        </div>
-      </div> */}
-
       <div ref={containerRef} className="flex flex-1 overflow-hidden">
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className="flex-1 overflow-y-auto bg-slate-100 relative"
+          className="flex-1 overflow-y-auto overflow-x-visible bg-slate-100 relative"
         >
           {/* Sticky bar */}
           <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-2 bg-white border-b border-slate-200">
@@ -347,7 +594,7 @@ export default function ReadingView() {
           {/* Document body */}
           <div
             ref={readingContentRef}
-            className="bg-white max-w-2xl mx-auto px-10 py-8 min-h-full"
+            className={`relative bg-white max-w-2xl mx-auto px-10 py-8 min-h-full ${sizeClass.body}`}
           >
             {/* Document header */}
             <div className="text-center mb-8 pb-6 border-b border-slate-100">
@@ -363,8 +610,11 @@ export default function ReadingView() {
 
             {/* Chunks */}
             <div className="space-y-3">
-              {nonCitationItemsWithIndex.map(({ item, originalIndex }) => {
-                const isPast = originalIndex < currentIndex;
+              {nonCitationItemsWithIndex.map(
+                ({ item, originalIndex }, displayIndex) => {
+                const isPast = displayIndex < currentIndex;
+                const isInterventionTarget =
+                  showIntervention && popupSignal?.chunkIndex === displayIndex;
                 const chunk = item as DocumentChunk;
                 const bookmarked = isBookmarked(originalIndex);
 
@@ -372,57 +622,66 @@ export default function ReadingView() {
                   <div
                     key={originalIndex}
                     ref={(el) => {
-                      chunkRefs.current[originalIndex] = el;
+                      chunkRefs.current[displayIndex] = el;
                     }}
                     style={{
                       opacity: isPast ? 0.55 : 1,
                       transition: "opacity 0.5s ease",
                     }}
-                    className="relative group/chunk"
+                    className="relative group/chunk transition-all duration-300"
                   >
-                    <button
-                      onClick={() =>
-                        bookmarked
-                          ? deleteBookmark(
-                              bookmarks.find(
-                                (b) => b.chunkIndex === originalIndex
-                              )?.id ?? ""
-                            )
-                          : addBookmark(
-                              originalIndex,
-                              chunk.page_number,
-                              chunk.text,
-                              `Page ${chunk.page_number ?? originalIndex + 1}`
-                            )
-                      }
-                      className={`absolute -left-7 top-1 p-1 rounded transition-all ${
-                        bookmarked
-                          ? "text-indigo-500 opacity-100"
-                          : "text-slate-300 opacity-0 group-hover/chunk:opacity-100 hover:text-indigo-400"
+                    <div
+                      className={`relative rounded-2xl transition-all duration-300 ${
+                        isInterventionTarget
+                          ? "bg-indigo-50/70 ring-2 ring-indigo-200 shadow-[0_0_0_1px_rgba(99,102,241,0.08)] px-4 py-4"
+                          : ""
                       }`}
-                      title={
-                        bookmarked
-                          ? "Remove bookmark"
-                          : "Bookmark this position"
-                      }
                     >
-                      <Bookmark
-                        className={`w-3.5 h-3.5 ${
-                          bookmarked ? "fill-indigo-500" : ""
+                      <button
+                        onClick={() =>
+                          bookmarked
+                            ? deleteBookmark(
+                                bookmarks.find(
+                                  (b) => b.chunkIndex === originalIndex
+                                )?.id ?? ""
+                              )
+                            : addBookmark(
+                                originalIndex,
+                                chunk.page_number,
+                                chunk.text,
+                                `Page ${chunk.page_number ?? originalIndex + 1}`
+                              )
+                        }
+                        className={`absolute -left-7 top-1 p-1 rounded transition-all ${
+                          bookmarked
+                            ? "text-indigo-500 opacity-100"
+                            : "text-slate-300 opacity-0 group-hover/chunk:opacity-100 hover:text-indigo-400"
                         }`}
-                      />
-                    </button>
+                        title={
+                          bookmarked
+                            ? "Remove bookmark"
+                            : "Bookmark this position"
+                        }
+                      >
+                        <Bookmark
+                          className={`w-3.5 h-3.5 ${
+                            bookmarked ? "fill-indigo-500" : ""
+                          }`}
+                        />
+                      </button>
 
-                    <ChunkRenderer
-                      elementType={chunk.element_type}
-                      text={chunk.text}
-                      imageData={chunk.image_data}
-                      pageNumber={chunk.page_number}
-                      keyIdea={chunk.key_idea}
-                      whyItMatters={chunk.why_it_matters}
-                      renderedHtml={chunk.rendered_html}
-                      estimatedReadTime={chunk.estimated_read_time_seconds}
-                    />
+                      <ChunkRenderer
+                        elementType={chunk.element_type}
+                        text={chunk.text}
+                        imageData={chunk.image_data}
+                        pageNumber={chunk.page_number}
+                        keyIdea={chunk.key_idea}
+                        whyItMatters={chunk.why_it_matters}
+                        renderedHtml={chunk.rendered_html}
+                        estimatedReadTime={chunk.estimated_read_time_seconds}
+                      />
+                    </div>
+
                   </div>
                 );
               })}
@@ -450,17 +709,83 @@ export default function ReadingView() {
               </div>
             )}
 
+            {showIntervention && popupAnchorTop !== null && (
+              <div
+                className="hidden lg:block absolute left-[calc(100%+1.75rem)] w-80 z-20"
+                style={{ top: popupAnchorTop }}
+              >
+                <InterventionPopup
+                  onClose={() => {
+                    // Just close this popup; next signal can re-show after cooldown
+                    setShowIntervention(false);
+                    setPopupSignal(null);
+                    startCooldown();
+                    // Show a brief toast so the user knows it'll come back later
+                    setShowCooldownToast(true);
+                    if (cooldownToastTimerRef.current)
+                      clearTimeout(cooldownToastTimerRef.current);
+                    cooldownToastTimerRef.current = setTimeout(() => {
+                      setShowCooldownToast(false);
+                      cooldownToastTimerRef.current = null;
+                    }, 4000);
+                  }}
+                  onNeverShowAgain={() => {
+                    // Permanently disable until user re-enables in Settings
+                    handleInterventionsEnabledChange(false);
+                  }}
+                  onAccept={() => {
+                    // Open the AI panel and close the popup
+                    setShowIntervention(false);
+                    setPopupSignal(null);
+                    setIsPanelOpen(true);
+                    startCooldown();
+                  }}
+                  signalSource={popupSignal?.source}
+                />
+              </div>
+            )}
+
+            {showIntervention && popupAnchorTop !== null && (
+              <div className="mt-4 lg:hidden">
+                <InterventionPopup
+                  onClose={() => {
+                    // Just close this popup; next signal can re-show after cooldown
+                    setShowIntervention(false);
+                    setPopupSignal(null);
+                    startCooldown();
+                    // Show a brief toast so the user knows it'll come back later
+                    setShowCooldownToast(true);
+                    if (cooldownToastTimerRef.current)
+                      clearTimeout(cooldownToastTimerRef.current);
+                    cooldownToastTimerRef.current = setTimeout(() => {
+                      setShowCooldownToast(false);
+                      cooldownToastTimerRef.current = null;
+                    }, 4000);
+                  }}
+                  onNeverShowAgain={() => {
+                    // Permanently disable until user re-enables in Settings
+                    handleInterventionsEnabledChange(false);
+                  }}
+                  onAccept={() => {
+                    // Open the AI panel and close the popup
+                    setShowIntervention(false);
+                    setPopupSignal(null);
+                    setIsPanelOpen(true);
+                    startCooldown();
+                  }}
+                  signalSource={popupSignal?.source}
+                />
+              </div>
+            )}
+
             <div className="h-24" />
           </div>
 
-          {showIntervention && (
-            <InterventionPopup
-              onDismiss={() => setShowIntervention(false)}
-              onAccept={() => {
-                setShowIntervention(false);
-                setIsPanelOpen(true);
-              }}
-            />
+
+          {showCooldownToast && (
+            <div className="fixed bottom-6 left-6 z-30 px-4 py-2 bg-slate-800/90 text-white text-xs rounded-full shadow-md animate-fade-in-out">
+              Paused for 50s — you won't be interrupted for a bit
+            </div>
           )}
 
           {!isPanelOpen && (
@@ -497,6 +822,19 @@ export default function ReadingView() {
                 onClose={() => setIsPanelOpen(false)}
                 sessionId={parsedDoc.session_id}
                 currentChunkIndex={currentChunkIndex}
+                pauseThreshold={pauseThreshold}
+                onPauseThresholdChange={setPauseThreshold}
+                pauseDetection={pauseDetection}
+                onPauseDetectionChange={setPauseDetection}
+                repeatedScrolling={repeatedScrolling}
+                onRepeatedScrollingChange={setRepeatedScrolling}
+                progressTracking={progressTracking}
+                onProgressTrackingChange={setProgressTracking}
+                textSize={textSize}
+                onTextSizeChange={setTextSize}
+                interventionsEnabled={interventionsEnabled}
+                onInterventionsEnabledChange={handleInterventionsEnabledChange}
+                lastDetectionSignal={lastSignal}
               />
             </div>
           </>

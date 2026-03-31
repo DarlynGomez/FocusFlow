@@ -6,6 +6,7 @@ pydantic-settings
 pdfplumber
 pymupdf
 llama-parse
+nest-asyncio
 sentence-transformers
 faiss-cpu
 numpy
