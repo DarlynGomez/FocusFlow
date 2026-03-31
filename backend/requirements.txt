@@ -10,3 +10,5 @@ python-dotenv
 llama-parse
 nest-asyncio
 pdfplumber
+sentence-transformers
+faiss-cpu

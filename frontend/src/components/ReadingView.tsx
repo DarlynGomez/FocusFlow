@@ -2,6 +2,10 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState, useRef, useCallback } from "react";
 import { MessageCircle, X, Lightbulb, Download } from "lucide-react";
 import RightPanel from "./RightPanel";
+import {
+  useBehavioralDetection,
+  type DetectionSignal,
+} from "../hooks/useBehavioralDetection";
 
 interface TextElement {
   text: string;
@@ -40,13 +44,48 @@ interface ReadingLocationState {
   guidanceLevel: string;
 }
 
+const SIGNAL_MESSAGES: Record<
+  string,
+  { heading: string; subtext: string }
+> = {
+  pause: {
+    heading: "You seem to be pausing here",
+    subtext: "Would you like an AI explanation of this section?",
+  },
+  repeated_scroll: {
+    heading: "You've re-read this section a few times",
+    subtext: "Want help understanding this part?",
+  },
+  slow_progress: {
+    heading: "This section seems challenging",
+    subtext: "Would you like a summary or explanation?",
+  },
+};
+
+const DEFAULT_SIGNAL_MESSAGE = {
+  heading: "Looks like you might need some help",
+  subtext: "Would you like an AI explanation of this section?",
+};
+
+/**
+ * Intervention popup with three actions:
+ *   X  (top-right)      → close this instance; future signals can still show it
+ *   "Don't show again"  → permanently disable intervention popups
+ *   "Get help"          → open the AI panel
+ */
 function InterventionPopup({
-  onDismiss,
+  onClose,
+  onNeverShowAgain,
   onAccept,
+  signalSource,
 }: {
-  onDismiss: () => void;
+  onClose: () => void;
+  onNeverShowAgain: () => void;
   onAccept: () => void;
+  signalSource?: string | null;
 }) {
+  const msg = (signalSource && SIGNAL_MESSAGES[signalSource]) || DEFAULT_SIGNAL_MESSAGE;
+
   return (
     <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 w-72 bg-white border border-indigo-200 rounded-2xl shadow-lg shadow-indigo-100 p-4 flex flex-col gap-3 animate-slide-up">
       <div className="flex items-start gap-3">
@@ -55,25 +94,26 @@ function InterventionPopup({
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-slate-800 leading-snug">
-            Looks like you might need some help
+            {msg.heading}
           </p>
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-            Would you like an AI explanation of this section?
+            {msg.subtext}
           </p>
         </div>
         <button
-          onClick={onDismiss}
+          onClick={onClose}
           className="flex-shrink-0 p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+          aria-label="Close popup"
         >
           <X className="w-3.5 h-3.5" />
         </button>
       </div>
       <div className="flex gap-2">
         <button
-          onClick={onDismiss}
+          onClick={onNeverShowAgain}
           className="flex-1 py-1.5 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
         >
-          Dismiss
+          Don't show again
         </button>
         <button
           onClick={onAccept}
@@ -102,10 +142,80 @@ export default function ReadingView() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const [showIntervention, setShowIntervention] = useState(false);
-  const interventionFiredRef = useRef(false);
+  const [showCooldownToast, setShowCooldownToast] = useState(false);
+  const cooldownToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Master switch: when false, popups never appear.
+  // "Don't show again" sets this to false; Settings toggle re-enables it.
+  const [interventionsEnabled, setInterventionsEnabled] = useState(true);
+
+  // Cooldown: after user dismisses a popup (X), block new popups for this
+  // many ms so we don't nag them. Cleared on unmount.
+  const COOLDOWN_MS = 50_000;
+  const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isCoolingDownRef = useRef(false);
+
+  const startCooldown = useCallback(() => {
+    isCoolingDownRef.current = true;
+    if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+    cooldownTimerRef.current = setTimeout(() => {
+      isCoolingDownRef.current = false;
+      cooldownTimerRef.current = null;
+    }, COOLDOWN_MS);
+  }, [COOLDOWN_MS]);
+
+  // Display settings (lifted from RightPanel so ReadingView can apply them)
+  const [textSize, setTextSize] = useState("medium");
+
+  // Behavioral detection settings (lifted from RightPanel so detectors can read them)
+  const [pauseThreshold, setPauseThreshold] = useState(5);
+  const [pauseDetection, setPauseDetection] = useState(true);
+  const [repeatedScrolling, setRepeatedScrolling] = useState(true);
+  const [progressTracking, setProgressTracking] = useState(true);
+
+  // Last detection signal — tells the popup which message to show
+  const [lastSignal, setLastSignal] = useState<DetectionSignal | null>(null);
 
   const isDragging = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const totalChunks = state?.document?.chunks?.length ?? 0;
+
+  // Ref to read the latest interventionsEnabled without re-creating the callback
+  const interventionsEnabledRef = useRef(interventionsEnabled);
+  interventionsEnabledRef.current = interventionsEnabled;
+
+  const handleDetectionSignal = useCallback((signal: DetectionSignal) => {
+    setLastSignal(signal);
+
+    // Gate: master toggle must be on, popup must not be visible, cooldown must be over
+    if (
+      interventionsEnabledRef.current &&
+      !isCoolingDownRef.current
+    ) {
+      setShowIntervention(true);
+    }
+  }, []);
+
+  // Clean up timers on unmount
+  useEffect(() => {
+    return () => {
+      if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+      if (cooldownToastTimerRef.current) clearTimeout(cooldownToastTimerRef.current);
+    };
+  }, []);
+
+  const { handleUserActivity } = useBehavioralDetection({
+    currentIndex,
+    totalChunks,
+    settings: {
+      pauseDetectionEnabled: pauseDetection,
+      repeatedScrollingEnabled: repeatedScrolling,
+      progressTrackingEnabled: progressTracking,
+      pauseThresholdSeconds: pauseThreshold,
+    },
+    onSignal: handleDetectionSignal,
+  });
 
   useEffect(() => {
     if (!state || !state.document) {
@@ -116,6 +226,17 @@ export default function ReadingView() {
   const handleScroll = useCallback(() => {
     const container = scrollRef.current;
     if (!container) return;
+
+    // When the user is at or near the top of the document, nothing should
+    // be faded — the reading line logic would otherwise grey-out short
+    // chunks (headings, first paragraphs) that naturally sit above the 35%
+    // mark even though the user hasn't scrolled past them.
+    const scrollTop = container.scrollTop;
+    if (scrollTop < 80) {
+      setCurrentIndex(0);
+      handleUserActivity();
+      return;
+    }
 
     const containerTop = container.getBoundingClientRect().top;
     const readingLine = containerTop + container.clientHeight * 0.35;
@@ -130,11 +251,9 @@ export default function ReadingView() {
     }
     setCurrentIndex(newIndex);
 
-    if (newIndex >= 5 && !interventionFiredRef.current) {
-      interventionFiredRef.current = true;
-      setShowIntervention(true);
-    }
-  }, []);
+    // Reset the pause timer on every scroll event
+    handleUserActivity();
+  }, [handleUserActivity]);
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!isDragging.current || !containerRef.current) return;
@@ -160,9 +279,31 @@ export default function ReadingView() {
     };
   }, [handleMouseMove, handleMouseUp]);
 
+  // Reset pause timer on mouse/keyboard activity within the reading area
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const onActivity = () => handleUserActivity();
+    container.addEventListener("mousemove", onActivity);
+    container.addEventListener("keydown", onActivity);
+    return () => {
+      container.removeEventListener("mousemove", onActivity);
+      container.removeEventListener("keydown", onActivity);
+    };
+  }, [handleUserActivity]);
+
   if (!state || !state.document) return null;
 
   const { document: parsedDoc } = state;
+
+  // Map the text-size setting to Tailwind classes
+  const textSizeClasses: Record<string, { body: string; heading: string; table: string }> = {
+    small:  { body: "text-xs",  heading: "text-sm font-semibold",  table: "text-[10px]" },
+    medium: { body: "text-sm",  heading: "text-base font-semibold", table: "text-xs" },
+    large:  { body: "text-base", heading: "text-lg font-semibold",  table: "text-sm" },
+  };
+  const sizeClass = textSizeClasses[textSize] ?? textSizeClasses.medium;
 
   // Use chunks for page tracking if available, fall back to elements.
   // This gives accurate page numbers once the chunker is wired in.
@@ -215,8 +356,9 @@ export default function ReadingView() {
           onScroll={handleScroll}
           className="flex-1 overflow-y-auto px-8 py-6 bg-slate-50 relative"
         >
-          <div className="max-w-2xl mx-auto">
-            <div className="flex items-center justify-between mb-6">
+          {/* Sticky page indicator + download — always visible as the user scrolls */}
+          <div className="sticky top-0 z-10 bg-slate-50/95 backdrop-blur-sm pb-3 pt-1">
+            <div className="max-w-2xl mx-auto flex items-center justify-between">
               <span className="text-xs text-slate-400">
                 Page {currentPage} of {totalPages}
               </span>
@@ -228,7 +370,9 @@ export default function ReadingView() {
                 Download
               </button>
             </div>
+          </div>
 
+          <div className="max-w-2xl mx-auto">
             <div className="space-y-4">
               {contentItems.map((item, index) => {
                 const isPast = index < currentIndex;
@@ -247,15 +391,15 @@ export default function ReadingView() {
                     }}
                     className={`leading-relaxed ${
                       elementType === "Title" || elementType === "heading"
-                        ? "text-base font-semibold text-slate-900"
+                        ? `${sizeClass.heading} text-slate-900`
                         : elementType === "table"
                         ? ""
-                        : "text-sm text-slate-700"
+                        : `${sizeClass.body} text-slate-700`
                     }`}
                   >
                     {elementType === "table" ? (
                       <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                        <pre className="text-xs text-slate-600 p-4 whitespace-pre-wrap">
+                        <pre className={`${sizeClass.table} text-slate-600 p-4 whitespace-pre-wrap`}>
                           {text}
                         </pre>
                       </div>
@@ -274,12 +418,37 @@ export default function ReadingView() {
 
           {showIntervention && (
             <InterventionPopup
-              onDismiss={() => setShowIntervention(false)}
+              onClose={() => {
+                // Just close this popup; next signal can re-show after cooldown
+                setShowIntervention(false);
+                startCooldown();
+                // Show a brief toast so the user knows it'll come back later
+                setShowCooldownToast(true);
+                if (cooldownToastTimerRef.current) clearTimeout(cooldownToastTimerRef.current);
+                cooldownToastTimerRef.current = setTimeout(() => {
+                  setShowCooldownToast(false);
+                  cooldownToastTimerRef.current = null;
+                }, 4000);
+              }}
+              onNeverShowAgain={() => {
+                // Permanently disable until user re-enables in Settings
+                setShowIntervention(false);
+                setInterventionsEnabled(false);
+              }}
               onAccept={() => {
+                // Open the AI panel and close the popup
                 setShowIntervention(false);
                 setIsPanelOpen(true);
+                startCooldown();
               }}
+              signalSource={lastSignal?.source}
             />
+          )}
+
+          {showCooldownToast && (
+            <div className="fixed bottom-6 left-6 z-30 px-4 py-2 bg-slate-800/90 text-white text-xs rounded-full shadow-md animate-fade-in-out">
+              Paused for 50s — you won't be interrupted for a bit
+            </div>
           )}
 
           {!isPanelOpen && (
@@ -316,6 +485,18 @@ export default function ReadingView() {
                 onClose={() => setIsPanelOpen(false)}
                 sessionId={parsedDoc.session_id}
                 currentChunkIndex={currentChunkIndex}
+                pauseThreshold={pauseThreshold}
+                onPauseThresholdChange={setPauseThreshold}
+                pauseDetection={pauseDetection}
+                onPauseDetectionChange={setPauseDetection}
+                repeatedScrolling={repeatedScrolling}
+                onRepeatedScrollingChange={setRepeatedScrolling}
+                progressTracking={progressTracking}
+                onProgressTrackingChange={setProgressTracking}
+                textSize={textSize}
+                onTextSizeChange={setTextSize}
+                interventionsEnabled={interventionsEnabled}
+                onInterventionsEnabledChange={setInterventionsEnabled}
               />
             </div>
           </>

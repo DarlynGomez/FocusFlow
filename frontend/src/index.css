@@ -34,3 +34,14 @@ body {
 .animate-slide-up {
   animation: slide-up 0.25s ease forwards;
 }
+
+@keyframes fade-in-out {
+  0%   { opacity: 0; transform: translateY(8px); }
+  12%  { opacity: 1; transform: translateY(0); }
+  80%  { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-4px); }
+}
+
+.animate-fade-in-out {
+  animation: fade-in-out 4s ease forwards;
+}

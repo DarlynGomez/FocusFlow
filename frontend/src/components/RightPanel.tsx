@@ -18,6 +18,19 @@ interface RightPanelProps {
   onClose: () => void;
   sessionId: string;
   currentChunkIndex: number;
+  // Behavioral detection settings (lifted to ReadingView)
+  pauseThreshold: number;
+  onPauseThresholdChange: (value: number) => void;
+  pauseDetection: boolean;
+  onPauseDetectionChange: (value: boolean) => void;
+  repeatedScrolling: boolean;
+  onRepeatedScrollingChange: (value: boolean) => void;
+  progressTracking: boolean;
+  onProgressTrackingChange: (value: boolean) => void;
+  textSize: string;
+  onTextSizeChange: (value: string) => void;
+  interventionsEnabled: boolean;
+  onInterventionsEnabledChange: (value: boolean) => void;
 }
 
 // Welcome message before the user sends anything
@@ -36,17 +49,22 @@ export default function RightPanel({
   onClose,
   sessionId,
   currentChunkIndex,
+  pauseThreshold,
+  onPauseThresholdChange,
+  pauseDetection,
+  onPauseDetectionChange,
+  repeatedScrolling,
+  onRepeatedScrollingChange,
+  progressTracking,
+  onProgressTrackingChange,
+  textSize,
+  onTextSizeChange,
+  interventionsEnabled,
+  onInterventionsEnabledChange,
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<"chat" | "settings">("chat");
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [inputValue, setInputValue] = useState("");
-  const [pauseThreshold, setPauseThreshold] = useState(5);
-  const [textSize, setTextSize] = useState("medium");
-
-  // Behavioral signal toggles for the settings tab
-  const [pauseDetection, setPauseDetection] = useState(true);
-  const [repeatedScrolling, setRepeatedScrolling] = useState(true);
-  const [progressTracking, setProgressTracking] = useState(true);
 
   // Invisible div at the bottom of the chat list
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -227,7 +245,7 @@ export default function RightPanel({
               max={30}
               step={1}
               value={pauseThreshold}
-              onChange={(e) => setPauseThreshold(Number(e.target.value))}
+              onChange={(e) => onPauseThresholdChange(Number(e.target.value))}
               className="w-full accent-indigo-500"
             />
             <div className="flex justify-between text-xs text-slate-400">
@@ -243,13 +261,34 @@ export default function RightPanel({
             </label>
             <select
               value={textSize}
-              onChange={(e) => setTextSize(e.target.value)}
+              onChange={(e) => onTextSizeChange(e.target.value)}
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 outline-none focus:border-indigo-300"
             >
               <option value="small">Small</option>
               <option value="medium">Medium</option>
               <option value="large">Large</option>
             </select>
+          </div>
+
+          {/* Intervention popups toggle */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">
+              Interventions
+            </label>
+            <label className="flex items-center gap-2.5 cursor-pointer">
+              <input
+                id="interventions-enabled"
+                type="checkbox"
+                checked={interventionsEnabled}
+                onChange={(e) => onInterventionsEnabledChange(e.target.checked)}
+                className="accent-indigo-500 w-4 h-4"
+              />
+              <span className="text-sm text-slate-700">Show help popups</span>
+            </label>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              When enabled, a popup appears when the system detects you may be
+              struggling. You can turn this off at any time.
+            </p>
           </div>
 
           {/* Behavioral signals checkboxes */}
@@ -265,7 +304,7 @@ export default function RightPanel({
                 id="pause-detection"
                 type="checkbox"
                 checked={pauseDetection}
-                onChange={(e) => setPauseDetection(e.target.checked)}
+                onChange={(e) => onPauseDetectionChange(e.target.checked)}
                 className="accent-indigo-500 w-4 h-4"
               />
               <span className="text-sm text-slate-700">Pause detection</span>
@@ -276,7 +315,7 @@ export default function RightPanel({
                 id="repeated-scrolling"
                 type="checkbox"
                 checked={repeatedScrolling}
-                onChange={(e) => setRepeatedScrolling(e.target.checked)}
+                onChange={(e) => onRepeatedScrollingChange(e.target.checked)}
                 className="accent-indigo-500 w-4 h-4"
               />
               <span className="text-sm text-slate-700">Repeated scrolling</span>
@@ -287,7 +326,7 @@ export default function RightPanel({
                 id="progress-tracking"
                 type="checkbox"
                 checked={progressTracking}
-                onChange={(e) => setProgressTracking(e.target.checked)}
+                onChange={(e) => onProgressTrackingChange(e.target.checked)}
                 className="accent-indigo-500 w-4 h-4"
               />
               <span className="text-sm text-slate-700">Progress tracking</span>
