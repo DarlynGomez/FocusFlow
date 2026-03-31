@@ -33,6 +33,12 @@ interface RightPanelProps {
   interventionsEnabled: boolean;
   onInterventionsEnabledChange: (value: boolean) => void;
   lastDetectionSignal: DetectionSignal | null;
+  interventionTrigger: {
+    chunkIndex: number;
+    signal: string;
+    timestamp: number;
+  } | null;
+  onInterventionTriggerConsumed: () => void;
 }
 
 // Welcome message before the user sends anything
@@ -64,12 +70,15 @@ export default function RightPanel({
   interventionsEnabled,
   onInterventionsEnabledChange,
   lastDetectionSignal,
+  interventionTrigger,
+  onInterventionTriggerConsumed,
 }: RightPanelProps) {
   void documentTitle;
   void lastDetectionSignal;
   const [activeTab, setActiveTab] = useState<"chat" | "settings">("chat");
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [inputValue, setInputValue] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
 
   // Invisible div at the bottom of the chat list
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -78,9 +87,75 @@ export default function RightPanel({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  useEffect(() => {
+    if (!interventionTrigger) return;
+
+    // Capture values locally before consuming the trigger
+    const capturedChunkIndex = interventionTrigger.chunkIndex;
+    const capturedSessionId = sessionId;
+
+    // Consume immediately so it doesn't re-fire
+    onInterventionTriggerConsumed();
+
+    setActiveTab("chat");
+
+    const placeholderMessage: Message = {
+      id: Date.now(),
+      role: "user",
+      text: "Help me understand where I am in this document.",
+    };
+    setMessages((prev) => [...prev, placeholderMessage]);
+    setIsLoading(true);
+
+    const delay = setTimeout(async () => {
+      console.log("Delay fired, about to fetch", {
+        capturedChunkIndex,
+        capturedSessionId,
+      });
+      try {
+        const BASE_URL =
+          import.meta.env.VITE_API_URL || "http://localhost:8000";
+        const response = await fetch(`${BASE_URL}/api/documents/query`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: capturedSessionId,
+            question:
+              "I've been reading this section and need help understanding where I am. " +
+              "Please give me a brief orientation: what section I'm in, what the key idea is, " +
+              "and what came just before this so I can re-orient. Keep it to 3-4 sentences.",
+            current_chunk_index: capturedChunkIndex,
+          }),
+        });
+        const data = await response.json();
+        console.log("Intervention response:", response.status, data);
+        setMessages((prev) => [
+          ...prev,
+          { id: Date.now() + 1, role: "ai", text: data.answer },
+        ]);
+      } catch (err) {
+        console.error("Intervention fetch error:", err);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now() + 1,
+            role: "ai",
+            text: "Sorry, I had trouble loading context. You can ask me anything about what you're reading.",
+          },
+        ]);
+      } finally {
+        setIsLoading(false);
+      }
+    }, 400);
+
+    console.log(delay);
+
+    // No cleanup here — we want this timeout to always complete
+  }, [interventionTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleSend = async () => {
     const trimmed = inputValue.trim();
-    if (!trimmed) return;
+    if (!trimmed || isLoading) return;
 
     const userMessage: Message = {
       id: Date.now(),
@@ -89,6 +164,13 @@ export default function RightPanel({
     };
     setMessages((prev) => [...prev, userMessage]);
     setInputValue("");
+    setIsLoading(true);
+
+    console.log("Chat fetch:", {
+      session_id: sessionId,
+      question: trimmed,
+      current_chunk_index: currentChunkIndex,
+    });
 
     try {
       const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -103,19 +185,21 @@ export default function RightPanel({
       });
 
       const data = await response.json();
-      const aiMessage: Message = {
-        id: Date.now() + 1,
-        role: "ai",
-        text: data.answer,
-      };
-      setMessages((prev) => [...prev, aiMessage]);
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now() + 1, role: "ai", text: data.answer },
+      ]);
     } catch {
-      const errorMessage: Message = {
-        id: Date.now() + 1,
-        role: "ai",
-        text: "Sorry, I had trouble reaching the server. Please try again.",
-      };
-      setMessages((prev) => [...prev, errorMessage]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now() + 1,
+          role: "ai",
+          text: "Sorry, I had trouble reaching the server. Please try again.",
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -191,6 +275,13 @@ export default function RightPanel({
                 {msg.text}
               </div>
             ))}
+            {isLoading && (
+              <div className="max-w-[85%] px-3 py-2 rounded-xl bg-slate-100 text-slate-500 self-start flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0ms]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:150ms]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:300ms]" />
+              </div>
+            )}
             {/* Invisible anchor at the bottom so useEffect can scroll here */}
             <div ref={messagesEndRef} />
           </div>
@@ -208,6 +299,7 @@ export default function RightPanel({
             />
             <button
               onClick={handleSend}
+              disabled={isLoading}
               className="px-3 py-2 bg-indigo-500 hover:bg-indigo-600 text-white text-sm rounded-lg transition-colors"
             >
               Send

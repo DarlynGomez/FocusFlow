@@ -2,6 +2,8 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from app.services.rag_service import query, get_structural_context, session_exists
+from app.services.support_generation_service import generate_document_chat_answer
+
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -59,14 +61,19 @@ async def query_document(body: QueryRequest):
     # This is where your Claude integration goes -- for now returns a placeholder
     # that shows the retrieved chunks are working correctly.
     # Wire the actual API call here in the next sprint.
-    answer = (
-        f"Based on the document, here is what I found relevant to your question "
-        f"'{body.question}':\n\n"
-        + "\n\n".join(
-            chunk.get("text") or chunk.get("chunk_text", "")
-            for chunk in retrieved_chunks[:2]
+    # Build excerpts list for the generation service
+    excerpts = []
+    if current:
+        excerpts.append(
+            f"Chunk title: Current section\nExcerpt: {current.get('text') or current.get('chunk_text', '')}"
         )
-    )
+    for chunk in retrieved_chunks:
+        section = chunk.get("section_title", "")
+        excerpts.append(
+            f"Chunk title: {chunk.get('title', 'Section')}\nSection: {section}\nExcerpt: {chunk.get('text') or chunk.get('chunk_text', '')}"
+        )
+
+    answer = generate_document_chat_answer(body.question, excerpts)
 
     return QueryResponse(
         answer=answer,

@@ -49,3 +49,27 @@ def complete(
     except Exception as e:
         logger.error(f"LLM completion failed: {e}")
         return None
+
+
+
+def chat_completion(
+    messages: list[dict],
+    max_tokens: int = 1000,
+    model: Optional[str] = None,
+) -> str:
+    """
+    Adapter so support_generation_service can call chat_completion(messages=[...])
+    without knowing about the underlying complete() signature.
+    Extracts system and user content from the messages list.
+    """
+    system = ""
+    user_parts = []
+    for msg in messages:
+        if msg["role"] == "system":
+            system = msg["content"]
+        else:
+            user_parts.append(msg["content"])
+
+    prompt = "\n\n".join(user_parts)
+    result = complete(prompt=prompt, system=system, max_tokens=max_tokens, model=model)
+    return result or "I wasn't able to generate a response. Please try again."

@@ -69,10 +69,7 @@ interface ReadingLocationState {
   guidanceLevel: string;
 }
 
-const SIGNAL_MESSAGES: Record<
-  string,
-  { heading: string; subtext: string }
-> = {
+const SIGNAL_MESSAGES: Record<string, { heading: string; subtext: string }> = {
   pause: {
     heading: "You seem to be pausing here",
     subtext: "Would you like an AI explanation of this section?",
@@ -159,6 +156,11 @@ export default function ReadingView() {
 
   // ── All hooks must be declared before any conditional return ──
   const [isPanelOpen, setIsPanelOpen] = useState(false);
+  const [interventionTrigger, setInterventionTrigger] = useState<{
+    chunkIndex: number;
+    signal: string;
+    timestamp: number;
+  } | null>(null);
   const [guidanceLevel, setGuidanceLevel] = useState(
     state?.guidanceLevel ?? "medium"
   );
@@ -209,14 +211,10 @@ export default function ReadingView() {
     : [];
   const readingItemsWithIndex = contentItems
     .map((item, originalIndex) => ({ item, originalIndex }))
-    .filter(
-      ({ item }) => (item as DocumentChunk).element_type !== "citation"
-    );
+    .filter(({ item }) => (item as DocumentChunk).element_type !== "citation");
   const totalChunks = readingItemsWithIndex.length;
   const boundedDetectionIndex =
-    totalChunks > 0
-      ? Math.max(0, Math.min(currentIndex, totalChunks - 1))
-      : 0;
+    totalChunks > 0 ? Math.max(0, Math.min(currentIndex, totalChunks - 1)) : 0;
 
   // Ref to read the latest interventionsEnabled without re-creating the callback
   const interventionsEnabledRef = useRef(interventionsEnabled);
@@ -340,8 +338,9 @@ export default function ReadingView() {
 
   // Bookmarks hook -- session_id may be undefined if state is null,
   // but the hook is always called; it just operates on an empty string.
-  const { bookmarks, addBookmark, deleteBookmark, isBookmarked } =
-    useBookmarks(state?.document?.session_id ?? "");
+  const { bookmarks, addBookmark, deleteBookmark, isBookmarked } = useBookmarks(
+    state?.document?.session_id ?? ""
+  );
 
   const jumpToChunk = (chunkIndex: number) => {
     const displayIndex = readingItemsWithIndex.findIndex(
@@ -612,79 +611,82 @@ export default function ReadingView() {
             <div className="space-y-3">
               {nonCitationItemsWithIndex.map(
                 ({ item, originalIndex }, displayIndex) => {
-                const isPast = displayIndex < currentIndex;
-                const isInterventionTarget =
-                  showIntervention && popupSignal?.chunkIndex === displayIndex;
-                const chunk = item as DocumentChunk;
-                const bookmarked = isBookmarked(originalIndex);
+                  const isPast = displayIndex < currentIndex;
+                  const isInterventionTarget =
+                    showIntervention &&
+                    popupSignal?.chunkIndex === displayIndex;
+                  const chunk = item as DocumentChunk;
+                  const bookmarked = isBookmarked(originalIndex);
 
-                return (
-                  <div
-                    key={originalIndex}
-                    ref={(el) => {
-                      chunkRefs.current[displayIndex] = el;
-                    }}
-                    style={{
-                      opacity: isPast ? 0.55 : 1,
-                      transition: "opacity 0.5s ease",
-                    }}
-                    className="relative group/chunk transition-all duration-300"
-                  >
+                  return (
                     <div
-                      className={`relative rounded-2xl transition-all duration-300 ${
-                        isInterventionTarget
-                          ? "bg-indigo-50/70 ring-2 ring-indigo-200 shadow-[0_0_0_1px_rgba(99,102,241,0.08)] px-4 py-4"
-                          : ""
-                      }`}
+                      key={originalIndex}
+                      ref={(el) => {
+                        chunkRefs.current[displayIndex] = el;
+                      }}
+                      style={{
+                        opacity: isPast ? 0.55 : 1,
+                        transition: "opacity 0.5s ease",
+                      }}
+                      className="relative group/chunk transition-all duration-300"
                     >
-                      <button
-                        onClick={() =>
-                          bookmarked
-                            ? deleteBookmark(
-                                bookmarks.find(
-                                  (b) => b.chunkIndex === originalIndex
-                                )?.id ?? ""
-                              )
-                            : addBookmark(
-                                originalIndex,
-                                chunk.page_number,
-                                chunk.text,
-                                `Page ${chunk.page_number ?? originalIndex + 1}`
-                              )
-                        }
-                        className={`absolute -left-7 top-1 p-1 rounded transition-all ${
-                          bookmarked
-                            ? "text-indigo-500 opacity-100"
-                            : "text-slate-300 opacity-0 group-hover/chunk:opacity-100 hover:text-indigo-400"
+                      <div
+                        className={`relative rounded-2xl transition-all duration-300 ${
+                          isInterventionTarget
+                            ? "bg-indigo-50/70 ring-2 ring-indigo-200 shadow-[0_0_0_1px_rgba(99,102,241,0.08)] px-4 py-4"
+                            : ""
                         }`}
-                        title={
-                          bookmarked
-                            ? "Remove bookmark"
-                            : "Bookmark this position"
-                        }
                       >
-                        <Bookmark
-                          className={`w-3.5 h-3.5 ${
-                            bookmarked ? "fill-indigo-500" : ""
+                        <button
+                          onClick={() =>
+                            bookmarked
+                              ? deleteBookmark(
+                                  bookmarks.find(
+                                    (b) => b.chunkIndex === originalIndex
+                                  )?.id ?? ""
+                                )
+                              : addBookmark(
+                                  originalIndex,
+                                  chunk.page_number,
+                                  chunk.text,
+                                  `Page ${
+                                    chunk.page_number ?? originalIndex + 1
+                                  }`
+                                )
+                          }
+                          className={`absolute -left-7 top-1 p-1 rounded transition-all ${
+                            bookmarked
+                              ? "text-indigo-500 opacity-100"
+                              : "text-slate-300 opacity-0 group-hover/chunk:opacity-100 hover:text-indigo-400"
                           }`}
+                          title={
+                            bookmarked
+                              ? "Remove bookmark"
+                              : "Bookmark this position"
+                          }
+                        >
+                          <Bookmark
+                            className={`w-3.5 h-3.5 ${
+                              bookmarked ? "fill-indigo-500" : ""
+                            }`}
+                          />
+                        </button>
+
+                        <ChunkRenderer
+                          elementType={chunk.element_type}
+                          text={chunk.text}
+                          imageData={chunk.image_data}
+                          pageNumber={chunk.page_number}
+                          keyIdea={chunk.key_idea}
+                          whyItMatters={chunk.why_it_matters}
+                          renderedHtml={chunk.rendered_html}
+                          estimatedReadTime={chunk.estimated_read_time_seconds}
                         />
-                      </button>
-
-                      <ChunkRenderer
-                        elementType={chunk.element_type}
-                        text={chunk.text}
-                        imageData={chunk.image_data}
-                        pageNumber={chunk.page_number}
-                        keyIdea={chunk.key_idea}
-                        whyItMatters={chunk.why_it_matters}
-                        renderedHtml={chunk.rendered_html}
-                        estimatedReadTime={chunk.estimated_read_time_seconds}
-                      />
+                      </div>
                     </div>
-
-                  </div>
-                );
-              })}
+                  );
+                }
+              )}
             </div>
 
             {/* References */}
@@ -734,11 +736,21 @@ export default function ReadingView() {
                     handleInterventionsEnabledChange(false);
                   }}
                   onAccept={() => {
-                    // Open the AI panel and close the popup
+                    console.log(
+                      "onAccept fired, session_id:",
+                      parsedDoc.session_id,
+                      "trigger chunk:",
+                      boundedDetectionIndex
+                    );
                     setShowIntervention(false);
                     setPopupSignal(null);
                     setIsPanelOpen(true);
                     startCooldown();
+                    setInterventionTrigger({
+                      chunkIndex: boundedDetectionIndex,
+                      signal: popupSignal?.source ?? "pause",
+                      timestamp: Date.now(),
+                    });
                   }}
                   signalSource={popupSignal?.source}
                 />
@@ -767,11 +779,21 @@ export default function ReadingView() {
                     handleInterventionsEnabledChange(false);
                   }}
                   onAccept={() => {
-                    // Open the AI panel and close the popup
+                    console.log(
+                      "onAccept fired, session_id:",
+                      parsedDoc.session_id,
+                      "trigger chunk:",
+                      boundedDetectionIndex
+                    );
                     setShowIntervention(false);
                     setPopupSignal(null);
                     setIsPanelOpen(true);
                     startCooldown();
+                    setInterventionTrigger({
+                      chunkIndex: boundedDetectionIndex,
+                      signal: popupSignal?.source ?? "pause",
+                      timestamp: Date.now(),
+                    });
                   }}
                   signalSource={popupSignal?.source}
                 />
@@ -780,7 +802,6 @@ export default function ReadingView() {
 
             <div className="h-24" />
           </div>
-
 
           {showCooldownToast && (
             <div className="fixed bottom-6 left-6 z-30 px-4 py-2 bg-slate-800/90 text-white text-xs rounded-full shadow-md animate-fade-in-out">
@@ -835,6 +856,10 @@ export default function ReadingView() {
                 interventionsEnabled={interventionsEnabled}
                 onInterventionsEnabledChange={handleInterventionsEnabledChange}
                 lastDetectionSignal={lastSignal}
+                interventionTrigger={interventionTrigger}
+                onInterventionTriggerConsumed={() =>
+                  setInterventionTrigger(null)
+                }
               />
             </div>
           </>
