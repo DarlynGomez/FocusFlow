@@ -13,9 +13,9 @@ class DocumentChunk(BaseModel):
     chunk_index: int
     text: str
     page_number: Optional[int] = None
-    element_type: str = "text"
+    element_type: str
     char_count: int
-    is_section_start: bool = False
+    is_section_start: bool
     image_data: Optional[str] = None
     image_width: Optional[int] = None
     image_height: Optional[int] = None
@@ -24,6 +24,8 @@ class DocumentChunk(BaseModel):
     why_it_matters: Optional[str] = None
     estimated_read_time_seconds: Optional[int] = None
     rendered_html: Optional[str] = None
+    assessment_question: Optional[str] = None   # ← new
+    assessment_answer: Optional[str] = None     # ← new
 
 
 class ParseClassification(BaseModel):

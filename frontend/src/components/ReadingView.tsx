@@ -46,6 +46,8 @@ interface DocumentChunk {
   why_it_matters?: string;
   estimated_read_time_seconds?: number;
   rendered_html?: string;
+  assessment_question?: string;
+  assessment_answer?: string;
 }
 
 interface ParsedDocument {
@@ -168,6 +170,7 @@ export default function ReadingView() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showIntervention, setShowIntervention] = useState(false);
   const [bookmarksPanelOpen, setBookmarksPanelOpen] = useState(false);
+  const [assessmentsEnabled, setAssessmentsEnabled] = useState(true);
 
   const chunkRefs = useRef<(HTMLDivElement | null)[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -180,6 +183,17 @@ export default function ReadingView() {
   const cooldownToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
+
+  type SectionState =
+    | "unread"
+    | "reading"
+    | "assessed-correct"
+    | "assessed-incorrect"
+    | "struggled";
+
+  const [_sectionStates, setSectionStates] = useState<
+    Record<number, SectionState>
+  >({});
 
   // Master switch: when false, popups never appear.
   // "Don't show again" sets this to false; Settings toggle re-enables it.
@@ -202,6 +216,13 @@ export default function ReadingView() {
   const [lastSignal, setLastSignal] = useState<DetectionSignal | null>(null);
   const [popupSignal, setPopupSignal] = useState<DetectionSignal | null>(null);
   const [popupAnchorTop, setPopupAnchorTop] = useState<number | null>(null);
+
+  const updateSectionState = useCallback(
+    (chunkIndex: number, state: SectionState) => {
+      setSectionStates((prev) => ({ ...prev, [chunkIndex]: state }));
+    },
+    []
+  );
 
   // Last detection signal — tells the popup which message to show
   const contentItems = state?.document
@@ -380,6 +401,18 @@ export default function ReadingView() {
       if (el.getBoundingClientRect().bottom < readingLine) newIndex = i + 1;
     }
     setCurrentIndex(newIndex);
+
+    // Mark the section the reader just entered as reading
+    const currentChunk = readingItemsWithIndex[newIndex]?.item as DocumentChunk;
+    if (currentChunk?.element_type === "heading") {
+      setSectionStates((prev) => ({
+        ...prev,
+        [newIndex]:
+          prev[newIndex] === "assessed-correct"
+            ? "assessed-correct"
+            : "reading",
+      }));
+    }
 
     // Reset the pause timer on every scroll event
     handleUserActivity("scroll");
@@ -687,6 +720,18 @@ export default function ReadingView() {
                           whyItMatters={chunk.why_it_matters}
                           renderedHtml={chunk.rendered_html}
                           estimatedReadTime={chunk.estimated_read_time_seconds}
+                          assessmentQuestion={chunk.assessment_question}
+                          assessmentAnswer={chunk.assessment_answer}
+                          sessionId={parsedDoc.session_id}
+                          chunkIndex={displayIndex}
+                          onAssessmentResult={(result) => {
+                            updateSectionState(
+                              displayIndex,
+                              result === "correct"
+                                ? "assessed-correct"
+                                : "assessed-incorrect"
+                            );
+                          }}
                         />
                       </div>
                     </div>
@@ -864,6 +909,8 @@ export default function ReadingView() {
                 onInterventionTriggerConsumed={() =>
                   setInterventionTrigger(null)
                 }
+                assessmentsEnabled={assessmentsEnabled}
+                onAssessmentsEnabledChange={setAssessmentsEnabled}
               />
             </div>
           </>

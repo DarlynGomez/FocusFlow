@@ -1,5 +1,6 @@
 import { useState } from "react";
 import katex from "katex";
+import AssessmentCard from "./AssessmentCard";
 
 interface ChunkProps {
   elementType: string;
@@ -10,6 +11,12 @@ interface ChunkProps {
   whyItMatters?: string;
   renderedHtml?: string;
   estimatedReadTime?: number;
+  assessmentQuestion?: string;
+  assessmentAnswer?: string;
+  sessionId?: string;
+  chunkIndex?: number;
+  onAssessmentResult?: (result: "correct" | "incorrect") => void;
+  assessmentsEnabled?: boolean;
 }
 
 function renderMathText(text: string): React.ReactNode[] {
@@ -80,10 +87,25 @@ export default function ChunkRenderer({
   whyItMatters,
   renderedHtml,
   estimatedReadTime,
+  assessmentQuestion,
+  assessmentAnswer,
+  sessionId,
+  chunkIndex,
+  onAssessmentResult,
+  assessmentsEnabled = true,
 }: ChunkProps) {
   // useState MUST be called before any conditional returns.
   const [insightOpen, setInsightOpen] = useState(false);
+  const [cardOpen, setCardOpen] = useState(false);
   const hasInsight = !!(keyIdea || whyItMatters);
+  const hasAssessment =
+    assessmentsEnabled &&
+    !!(
+      assessmentQuestion &&
+      assessmentAnswer &&
+      sessionId != null &&
+      chunkIndex != null
+    );
 
   // IMAGE
   if (elementType === "image") {
@@ -193,22 +215,33 @@ export default function ChunkRenderer({
     return (
       <div className="mt-8 mb-3">
         <div className="flex items-start gap-2">
-          {/* Inline style guarantees heading size survives any Tailwind base reset */}
           <h2
             style={{ fontSize: "1.125rem", fontWeight: 700, lineHeight: 1.35 }}
             className="text-slate-900 select-text flex-1 tracking-tight"
           >
             {renderMathText(text)}
           </h2>
-          {hasInsight && (
-            <button
-              onClick={() => setInsightOpen((o) => !o)}
-              className="shrink-0 mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-indigo-50 text-indigo-500 hover:bg-indigo-100 transition-colors"
-            >
-              {insightOpen ? "hide" : "key idea"}
-            </button>
-          )}
+          <div className="flex items-center gap-1 shrink-0 mt-0.5">
+            {hasInsight && (
+              <button
+                onClick={() => setInsightOpen((o) => !o)}
+                className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-indigo-50 text-indigo-500 hover:bg-indigo-100 transition-colors"
+              >
+                {insightOpen ? "hide" : "key idea"}
+              </button>
+            )}
+            {hasAssessment && (
+              <button
+                onClick={() => setCardOpen((o) => !o)}
+                className="w-5 h-5 rounded-full bg-slate-100 hover:bg-indigo-100 text-slate-400 hover:text-indigo-500 text-[11px] font-bold flex items-center justify-center transition-colors"
+                title="Test your understanding of this section"
+              >
+                ?
+              </button>
+            )}
+          </div>
         </div>
+
         {insightOpen && (keyIdea || whyItMatters) && (
           <div className="mt-2 p-3 rounded-lg bg-indigo-50 border border-indigo-100 text-xs text-indigo-700 space-y-1">
             {keyIdea && (
@@ -224,6 +257,17 @@ export default function ChunkRenderer({
               </p>
             )}
           </div>
+        )}
+
+        {cardOpen && hasAssessment && (
+          <AssessmentCard
+            question={assessmentQuestion!}
+            idealAnswer={assessmentAnswer!}
+            sessionId={sessionId!}
+            chunkIndex={chunkIndex!}
+            onResult={(result) => onAssessmentResult?.(result)}
+            onClose={() => setCardOpen(false)}
+          />
         )}
       </div>
     );

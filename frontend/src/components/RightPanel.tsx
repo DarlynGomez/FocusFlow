@@ -39,6 +39,8 @@ interface RightPanelProps {
     timestamp: number;
   } | null;
   onInterventionTriggerConsumed: () => void;
+  assessmentsEnabled: boolean;
+  onAssessmentsEnabledChange: (value: boolean) => void;
 }
 
 // Welcome message before the user sends anything
@@ -130,6 +132,8 @@ export default function RightPanel({
   lastDetectionSignal,
   interventionTrigger,
   onInterventionTriggerConsumed,
+  assessmentsEnabled,
+  onAssessmentsEnabledChange,
 }: RightPanelProps) {
   void documentTitle;
   void lastDetectionSignal;
@@ -443,6 +447,29 @@ export default function RightPanel({
             <p className="text-xs text-slate-400 leading-relaxed">
               When enabled, a popup appears when the system detects you may be
               struggling. You can turn this off at any time.
+            </p>
+          </div>
+
+          {/* Assessment questions toggle */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">
+              Section quizzes
+            </label>
+            <label className="flex items-center gap-2.5 cursor-pointer">
+              <input
+                id="assessments-enabled"
+                type="checkbox"
+                checked={assessmentsEnabled}
+                onChange={(e) => onAssessmentsEnabledChange(e.target.checked)}
+                className="accent-indigo-500 w-4 h-4"
+              />
+              <span className="text-sm text-slate-700">
+                Show comprehension questions
+              </span>
+            </label>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              A short question appears at the end of each section to check
+              understanding. You can turn this off at any time.
             </p>
           </div>
 

@@ -138,6 +138,73 @@ JSON only. No preamble, no markdown fences."""
         return chunk
 
 
+def _enrich_heading_chunk(chunk: dict, all_chunks: list[dict], index: int) -> dict:
+    """
+    For major section headings, generate a micro-assessment question
+    that tests conceptual understanding of that section's content.
+    The question is stored on the heading chunk and displayed after
+    the reader scrolls past the section.
+    """
+    heading_text = chunk.get("text", "").strip()
+    if not heading_text:
+        return chunk
+
+    # Collect the body text of this section (chunks after this heading
+    # until the next heading) to give the LLM section content to work with
+    section_body_parts = []
+    for i in range(index + 1, min(len(all_chunks), index + 10)):
+        c = all_chunks[i]
+        if c.get("element_type") in ("heading", "Title"):
+            break
+        if c.get("element_type") == "text":
+            section_body_parts.append(c.get("text", "")[:600])
+
+    section_body = "\n\n".join(section_body_parts[:3])
+    if not section_body.strip():
+        return chunk
+
+    doc_context = _get_document_context(all_chunks)
+
+    prompt = f"""You are designing a micro-assessment for a neurodivergent student who just finished reading a section of an academic paper.
+
+Paper context:
+{doc_context}
+
+Section heading: {heading_text}
+
+Section content:
+{section_body[:1800]}
+
+Your task: Write one short-answer question that tests whether the student understood the CONCEPTUAL meaning of this section — not surface recall of facts, but whether they grasped the argument or finding.
+
+Rules:
+- The question must be answerable in 1-3 sentences
+- It must require understanding, not just memory (avoid "what was the sample size")
+- It should connect the section to the paper's broader argument
+- The ideal answer should demonstrate the student understood WHY, not just WHAT
+
+Respond with a JSON object with exactly these keys:
+- "question": the question string (1 sentence)
+- "ideal_answer": a model answer in 2-3 sentences that would indicate full understanding. Be specific — include key concepts, any important numbers, and the connection to the paper's argument.
+
+JSON only. No preamble, no markdown fences."""
+
+    raw = complete(prompt, max_tokens=300)
+    if raw is None:
+        return chunk
+
+    try:
+        cleaned = re.sub(r"^```[a-z]*\n?|```$", "", raw.strip(), flags=re.MULTILINE)
+        result = json.loads(cleaned)
+        return {
+            **chunk,
+            "assessment_question": result.get("question", ""),
+            "assessment_answer": result.get("ideal_answer", ""),
+        }
+    except (json.JSONDecodeError, TypeError, ValueError) as e:
+        logger.warning(f"Assessment generation failed for chunk {chunk.get('chunk_index')}: {e}")
+        return chunk
+
 def _enrich_table_chunk(chunk: dict, all_chunks: list[dict], index: int) -> dict:
     text = chunk.get("text", "").strip()
     if not text:
@@ -188,11 +255,22 @@ Respond ONLY with a JSON object with keys "html", "key_idea", "why_it_matters". 
         return chunk
 
 
+# Sections worth assessing
+ASSESSABLE_HEADINGS = {
+    "abstract", "introduction", "background", "related work",
+    "methods", "methodology", "results", "discussion",
+    "conclusion", "conclusions", "limitations", "future work",
+}
+
+def _is_assessable_heading(chunk: dict) -> bool:
+    text = chunk.get("text", "").strip().lower()
+    # Match exact names or numbered sections
+    import re
+    clean = re.sub(r"^\d+[\.\s]+", "", text).strip()
+    return any(clean == h or clean.startswith(h) for h in ASSESSABLE_HEADINGS)
+
+
 def enrich_chunks(chunks: list[dict]) -> list[dict]:
-    """
-    Enrich all chunks. Each chunk is processed independently so a failure
-    on one never blocks the others. Images and captions are skipped.
-    """
     enriched = []
     for i, chunk in enumerate(chunks):
         element_type = chunk.get("element_type", "text")
@@ -202,6 +280,8 @@ def enrich_chunks(chunks: list[dict]) -> list[dict]:
             enriched.append(chunk)
         elif element_type == "table":
             enriched.append(_enrich_table_chunk(chunk, chunks, i))
+        elif element_type == "heading" and _is_assessable_heading(chunk):
+            enriched.append(_enrich_heading_chunk(chunk, chunks, i))
         else:
             enriched.append(_enrich_text_chunk(chunk, chunks, i))
     return enriched

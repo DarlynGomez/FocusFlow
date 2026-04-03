@@ -132,6 +132,8 @@ async def upload_document(
                 why_it_matters=c.get("why_it_matters"),
                 estimated_read_time_seconds=c.get("estimated_read_time_seconds"),
                 rendered_html=c.get("rendered_html"),
+                assessment_question=c.get("assessment_question"),
+                assessment_answer=c.get("assessment_answer"),
             )
             for c in raw_chunks
         ]
