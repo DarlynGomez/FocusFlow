@@ -30,18 +30,28 @@ def _build_image_context(chunks: list[dict], current_index: int) -> str:
 def _get_document_context(all_chunks: list[dict]) -> str:
     """
     Extract the document title and abstract to give the LLM
-    global context about what the paper is arguing overall.
-    This makes key ideas specific to the paper's thesis rather
-    than generic descriptions of what a section contains.
+    global context. Skips metadata chunks (author, institution, date)
+    which are now typed as 'text' but are short and appear before
+    the first real heading.
     """
     lines = []
-    for c in all_chunks[:8]:
+    found_title = False
+    for c in all_chunks[:12]:
         et = c.get("element_type", "")
         text = c.get("text", "").strip()
-        if et in ("Title", "heading") and text:
-            lines.append(f"Paper title/heading: {text}")
-        elif et == "text" and len(text) > 100 and not lines:
-            lines.append(f"Opening context: {text[:300]}")
+        if not text:
+            continue
+        # The document title is the one 'Title' typed chunk
+        if et == "Title" and not found_title:
+            lines.append(f"Paper title: {text}")
+            found_title = True
+            continue
+        # First real section heading after title (Abstract, Introduction)
+        if et == "heading" and found_title:
+            lines.append(f"Section: {text}")
+        # First substantive body paragraph (likely abstract body)
+        if et == "text" and len(text) > 150 and len(lines) < 3:
+            lines.append(f"Opening context: {text[:400]}")
         if len(lines) >= 3:
             break
     return "\n".join(lines)
@@ -79,7 +89,7 @@ def _enrich_text_chunk(chunk: dict, all_chunks: list[dict], index: int) -> dict:
     image_context = _build_image_context(all_chunks, index)
     figure_note = f"\nNearby figures:\n{image_context}" if image_context else ""
 
-    prompt = f"""You are helping a neurodivergent student read this specific academic paper.
+    prompt = f"""You are helping a neurodivergent student deeply understand an academic paper.
 
 Paper context:
 {doc_context}
@@ -90,12 +100,20 @@ Section context:
 Passage to enrich:
 {text[:1500]}
 
-Your task: Write metadata that helps the student understand HOW this passage connects to the paper's overall argument and what it specifically proves or shows.
+Your task: Write metadata that connects this passage to the paper's larger argument and real-world significance.
 
 Respond with a JSON object with exactly these keys:
-- "key_idea": 1-2 sentences. State the specific finding, claim, or evidence in this passage -- include actual numbers, named variables, or comparisons if present. Connect it to what the paper is trying to prove. Do NOT write "this section discusses..." or "the authors explain...".
-- "why_it_matters": 1 sentence. What would a student miss if they skimmed this passage?
+
+- "key_idea": 1-2 sentences. State the specific finding, claim, or evidence in this passage. Include actual numbers, named variables, or comparisons if present. Start with what the passage PROVES or SHOWS, not what it "discusses" or "presents". Never start with "This section" or "The authors".
+
+- "why_it_matters": 1-2 sentences. Explain the INTELLECTUAL CONSEQUENCE of this finding — how it reframes the way we think about the topic, what assumption it challenges, what it makes possible, or how it advances the paper's central argument. Do NOT say "a student might miss" or "this is important because". Do NOT restate the key idea. Connect to the research goal or a real-world implication. Think: what changes in how you understand the world if this finding is true?
+
 - "estimated_read_time_seconds": integer at 150 words per minute.
+
+Examples of GOOD why_it_matters:
+- "This reframes studying as a timing problem rather than an effort problem, directly challenging the assumption that cramming is ineffective only because of fatigue."
+- "By achieving 97.7%% of centralized performance while guaranteeing privacy, this result collapses the assumed trade-off between data utility and patient protection that has blocked hospital collaboration for decades."
+- "This shifts the design question from 'does spaced repetition work' to 'how do we build systems that make it the default' — a fundamentally different problem with different institutional solutions."
 
 JSON only. No preamble, no markdown fences."""
 

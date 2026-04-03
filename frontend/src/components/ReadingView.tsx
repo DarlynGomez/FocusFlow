@@ -436,27 +436,26 @@ export default function ReadingView() {
   const { document: parsedDoc } = state;
 
   // Map the text-size setting to Tailwind classes
-  const textSizeClasses: Record<
-    string,
-    { body: string; heading: string; table: string }
-  > = {
-    small: {
-      body: "text-xs",
-      heading: "text-sm font-semibold",
-      table: "text-[10px]",
-    },
-    medium: {
-      body: "text-sm",
-      heading: "text-base font-semibold",
-      table: "text-xs",
-    },
-    large: {
-      body: "text-base",
-      heading: "text-lg font-semibold",
-      table: "text-sm",
-    },
-  };
-  const sizeClass = textSizeClasses[textSize] ?? textSizeClasses.medium;
+  // const textSizeClasses: Record<
+  //   string,
+  //   { body: string; heading: string; table: string }
+  // > = {
+  //   small: {
+  //     body: "text-xs",
+  //     heading: "text-sm font-semibold",
+  //     table: "text-[10px]",
+  //   },
+  //   medium: {
+  //     body: "text-sm",
+  //     heading: "text-base font-semibold",
+  //     table: "text-xs",
+  //   },
+  //   large: {
+  //     body: "text-base",
+  //     heading: "text-lg font-semibold",
+  //     table: "text-sm",
+  //   },
+  // };
 
   const boundedCurrentIndex =
     readingItemsWithIndex.length > 0
@@ -589,11 +588,18 @@ export default function ReadingView() {
               </button>
             </div>
           </div>
-
           {/* Document body */}
           <div
             ref={readingContentRef}
-            className={`relative bg-white max-w-2xl mx-auto px-10 py-8 min-h-full ${sizeClass.body}`}
+            className="relative bg-white max-w-2xl mx-auto px-10 py-8 min-h-full"
+            style={{
+              fontSize:
+                textSize === "small"
+                  ? "0.75rem"
+                  : textSize === "large"
+                  ? "1rem"
+                  : "0.875rem",
+            }}
           >
             {/* Document header */}
             <div className="text-center mb-8 pb-6 border-b border-slate-100">
@@ -802,13 +808,11 @@ export default function ReadingView() {
 
             <div className="h-24" />
           </div>
-
           {showCooldownToast && (
             <div className="fixed bottom-6 left-6 z-30 px-4 py-2 bg-slate-800/90 text-white text-xs rounded-full shadow-md animate-fade-in-out">
               Paused for 50s — you won't be interrupted for a bit
             </div>
           )}
-
           {!isPanelOpen && (
             <button
               onClick={() => setIsPanelOpen(true)}

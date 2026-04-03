@@ -48,6 +48,64 @@ const WELCOME_MESSAGE: Message = {
   text: "Hi! I'm here to help you understand this document. Ask me anything about what you're reading, and I'll do my best to help.",
 };
 
+function renderMarkdown(text: string): React.ReactNode {
+  // Split into lines and process block-level elements
+  const lines = text.split("\n");
+  const elements: React.ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Bold: **text**
+    // Inline formatting applied via a helper
+    const formatted = formatInline(line);
+
+    if (line.startsWith("**") && line.endsWith("**") && line.length > 4) {
+      elements.push(
+        <strong key={i} className="font-semibold block">
+          {line.slice(2, -2)}
+        </strong>
+      );
+    } else if (line.startsWith("- ") || line.startsWith("* ")) {
+      elements.push(
+        <li key={i} className="ml-3 list-disc list-outside">
+          {formatInline(line.slice(2))}
+        </li>
+      );
+    } else if (line.trim() === "") {
+      elements.push(<div key={i} className="h-1" />);
+    } else {
+      elements.push(
+        <p key={i} className="leading-relaxed">
+          {formatted}
+        </p>
+      );
+    }
+    i++;
+  }
+
+  return <div className="space-y-1">{elements}</div>;
+}
+
+function formatInline(text: string): React.ReactNode {
+  // Handle **bold** and *italic* inline
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <strong key={i} className="font-semibold">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (part.startsWith("*") && part.endsWith("*")) {
+      return <em key={i}>{part.slice(1, -1)}</em>;
+    }
+    return part;
+  });
+}
+
 export default function RightPanel({
   documentTitle,
   currentPage,
@@ -272,7 +330,7 @@ export default function RightPanel({
                     : "bg-indigo-500 text-white self-end"
                 }`}
               >
-                {msg.text}
+                {msg.role === "ai" ? renderMarkdown(msg.text) : msg.text}
               </div>
             ))}
             {isLoading && (

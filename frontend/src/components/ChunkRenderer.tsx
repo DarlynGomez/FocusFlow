@@ -105,7 +105,7 @@ export default function ChunkRenderer({
       return (
         <div className="my-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
           <div
-            className="text-sm [&_table]:w-full [&_table]:border-collapse [&_thead_tr]:bg-slate-50 [&_th]:px-4 [&_th]:py-2.5 [&_th]:text-left [&_th]:text-xs [&_th]:font-semibold [&_th]:text-slate-500 [&_th]:uppercase [&_th]:tracking-wide [&_th]:border-b [&_th]:border-slate-200 [&_td]:px-4 [&_td]:py-2 [&_td]:text-xs [&_td]:text-slate-700 [&_td]:border-b [&_td]:border-slate-100 [&_tr:last-child_td]:border-0 [&_tr:hover_td]:bg-slate-50"
+            className="text-[1em] [&_table]:w-full [&_table]:border-collapse [&_thead_tr]:bg-slate-50 [&_th]:px-4 [&_th]:py-2.5 [&_th]:text-left [&_th]:text-xs [&_th]:font-semibold [&_th]:text-slate-500 [&_th]:uppercase [&_th]:tracking-wide [&_th]:border-b [&_th]:border-slate-200 [&_td]:px-4 [&_td]:py-2 [&_td]:text-xs [&_td]:text-slate-700 [&_td]:border-b [&_td]:border-slate-100 [&_tr:last-child_td]:border-0 [&_tr:hover_td]:bg-slate-50"
             dangerouslySetInnerHTML={{ __html: renderedHtml }}
           />
         </div>
@@ -245,7 +245,7 @@ export default function ChunkRenderer({
           ✦
         </button>
       )}
-      <p className="text-sm text-slate-700 leading-relaxed select-text">
+      <p className="text-[1em] text-slate-700 leading-relaxed select-text">
         {renderMathText(text)}
       </p>
       {insightOpen && (keyIdea || whyItMatters) && (

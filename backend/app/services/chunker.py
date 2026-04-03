@@ -10,8 +10,6 @@ CHAR_LIMITS = {
     "light": 1100,
 }
 
-# Strict heading patterns -- only match lines that are ONLY a heading,
-# not a heading with prose concatenated after it.
 HEADING_SIGNALS = [
     r"^\d+[\.\s]+[A-Z][a-z]",
     r"^Abstract$",
@@ -22,21 +20,43 @@ HEADING_SIGNALS = [
     r"^Discussion$",
     r"^Introduction$",
     r"^Methods?$",
+    r"^Methodology$",
     r"^Results?$",
     r"^Appendix\s*[A-Z]?$",
+    r"^Related\s+Work$",
+    r"^Background$",
+    r"^Limitations?$",
+    r"^Future\s+Work$",
+]
+
+# These patterns identify document metadata -- author names, institutions,
+# dates, course info. They must NEVER be classified as headings even if
+# the parser labels them as Title/heading.
+METADATA_SIGNALS = [
+    # Institutional affiliations
+    r"(?i)(university|college|institute|department|school\s+of|faculty\s+of)",
+    r"(?i)(laboratory|lab\b|center\s+for|centre\s+for)",
+    # Dates and semesters
+    r"(?i)(spring|summer|fall|winter|autumn)\s+\d{4}",
+    r"^\d{4}$",
+    r"(?i)(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}",
+    # Author-like patterns: "Firstname Lastname" or "F. Lastname" or multiple names
+    r"^[A-Z][a-z]+(?:\s+[A-Z]\.?)?\s+[A-Z][a-z]+(?:\s*,\s*[A-Z][a-z]+(?:\s+[A-Z]\.?)?\s+[A-Z][a-z]+)*$",
+    # Email addresses
+    r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
+    # Course codes and numbers
+    r"(?i)(course|psyc|cs|math|eng|bio|chem|phys)\s*\d{3,4}",
+    # "Submitted to", "Prepared for", etc.
+    r"(?i)^(submitted\s+(to|for)|prepared\s+for|presented\s+(at|to))",
 ]
 
 CAPTION_SIGNALS = [
-    # Only match short standalone captions: "Figure 1." or "Figure 1. Title text"
-    # NOT sentences like "Figure 2 reveals a notable divergence..."
-    r"^(Figure|Fig\.?)\s+\d+\.\s",        # "Figure 1. Some title"
-    r"^(Figure|Fig\.?)\s+\d+\.$",          # "Figure 1." alone
-    r"^(Table)\s+\d+\.\s",                 # "Table 1. Some title"
-    r"^(Table)\s+\d+\.$",                  # "Table 1." alone
+    r"^(Figure|Fig\.?)\s+\d+\.\s",
+    r"^(Figure|Fig\.?)\s+\d+\.$",
+    r"^(Table)\s+\d+\.\s",
+    r"^(Table)\s+\d+\.$",
 ]
 
-# Short standalone sentences that summarize a figure without a number prefix.
-# Only match if the line is short (under 100 chars) and ends with a period.
 INLINE_CAPTION_SIGNALS = [
     r"^(Short-form video dominates|Usage trajectories diverge|The negative correlation)",
 ]
@@ -46,26 +66,63 @@ CITATION_SIGNALS = [
     r"^\d+\.\s+[A-Z][a-z]+,\s+[A-Z]",
     r"^\d+\.\s+.*\(\d{4}\)",
     r"^\d+\.\s+.*et al",
+    # Dash-prefixed reference lists (common in humanities papers)
+    r"^-\s+[A-Z][a-z]+,\s+[A-Z]",
+    r"^-\s+.*\(\d{4}\)",
 ]
 
 
+def _is_metadata(text: str) -> bool:
+    """
+    Returns True if this text looks like document metadata:
+    author name, institution, date, course info, etc.
+    These should render as plain text, never as section headings.
+    """
+    stripped = text.strip()
+    # Metadata is always short -- long text can't be a byline
+    if len(stripped) > 120:
+        return False
+    for pattern in METADATA_SIGNALS:
+        if re.search(pattern, stripped):
+            return True
+    return False
+
+
 def _is_heading(element: dict) -> bool:
+    text = element.get("text", "").strip()
+
+    # Metadata always wins -- never treat it as a heading
+    if _is_metadata(text):
+        return False
+
     if element.get("element_type") in ("Title", "heading"):
-        text = element.get("text", "").strip()
-        # Trust the parser label only for short text -- long text means
-        # the parser merged a heading and its paragraph together.
+        # Trust parser label only for short text
         if len(text) > 120:
             return False
         return True
-    text = element.get("text", "").strip()
+
     for pattern in HEADING_SIGNALS:
         if re.match(pattern, text, re.IGNORECASE):
-            # Additional guard: if the text is very long it is a merged
-            # heading+paragraph, not a pure heading.
             if len(text) > 150:
                 return False
             return True
     return False
+
+
+def _is_document_title(element: dict, position_index: int) -> bool:
+    """
+    The true document title is the first substantive non-metadata heading.
+    It must appear in the first 5 elements and be under 200 chars.
+    """
+    if position_index > 5:
+        return False
+    text = element.get("text", "").strip()
+    if len(text) > 200 or len(text) < 5:
+        return False
+    if _is_metadata(text):
+        return False
+    et = element.get("element_type", "")
+    return et in ("Title", "heading")
 
 
 def _is_table(element: dict) -> bool:
@@ -74,13 +131,11 @@ def _is_table(element: dict) -> bool:
 
 def _is_caption(element: dict) -> bool:
     text = element.get("text", "").strip()
-    # Never treat long sentences as captions -- they are body text.
     if len(text) > 150:
         return False
     for pattern in CAPTION_SIGNALS:
         if re.match(pattern, text, re.IGNORECASE):
             return True
-    # Short inline summary lines that act as captions
     if len(text) < 100:
         for pattern in INLINE_CAPTION_SIGNALS:
             if re.match(pattern, text, re.IGNORECASE):
@@ -97,16 +152,6 @@ def _is_citation(element: dict) -> bool:
 
 
 def _split_heading_from_prose(text: str) -> tuple[str, str]:
-    """
-    When a parser merges a numbered heading and its following paragraph
-    into one element, split them apart.
-
-    Detects the pattern: "N. Title Text Prose begins here..."
-    Returns (heading_text, prose_text). If no split point is found,
-    returns (text, "").
-    """
-    # Match a numbered heading at the start followed by prose.
-    # The heading ends at the first sentence boundary after the title words.
     match = re.match(
         r"^(\d+[\.\s]+[A-Z][^.!?]{3,60}?)\s{2,}([A-Z].{20,})",
         text,
@@ -115,7 +160,6 @@ def _split_heading_from_prose(text: str) -> tuple[str, str]:
     if match:
         return match.group(1).strip(), match.group(2).strip()
 
-    # Also handle "Abstract This study..." style merges.
     match2 = re.match(
         r"^(Abstract|Introduction|Methods?|Results?|Discussion|Conclusion[s]?|Acknowledgements?)\s+([A-Z].{20,})",
         text,
@@ -131,22 +175,12 @@ def chunk_elements(
     elements: list[dict],
     guidance_level: Literal["light", "medium", "heavy"],
 ) -> list[dict]:
-    """
-    Groups raw parser elements into reader-friendly chunks.
-
-    Key behaviors:
-    - Merged heading+prose elements are split before chunking.
-    - Headings are always standalone chunks.
-    - Captions and inline caption-like sentences get their own chunk.
-    - Citations accumulate as individual chunks for grouped rendering.
-    - Images pass through as standalone chunks with their base64 data.
-    - Prose accumulates until the char limit or a page boundary is hit.
-    """
     char_limit = CHAR_LIMITS.get(guidance_level, CHAR_LIMITS["medium"])
     chunks = []
     buffer_elements = []
     buffer_chars = 0
     chunk_index = 0
+    title_emitted = False  # track whether we've emitted the one true document title
 
     def flush_buffer():
         nonlocal chunk_index, buffer_elements, buffer_chars
@@ -182,13 +216,7 @@ def chunk_elements(
         chunks.append(chunk)
         chunk_index += 1
 
-    
-    for element in elements[:5]:
-        logger.info(
-            f"ELEMENT TYPE={element.get('element_type')} "
-            f"TEXT={repr(element.get('text', '')[:120])}"
-        )
-    # Pre-process: split any merged heading+prose elements before the main loop.
+    # Pre-process: split merged heading+prose elements
     split_elements: list[dict] = []
     for element in elements:
         if element.get("type") == "image":
@@ -197,7 +225,6 @@ def chunk_elements(
         text = element.get("text", "").strip()
         if not text:
             continue
-        # Only attempt split on elements that look like they start with a heading.
         if re.match(r"^(\d+[\.\s]+[A-Z]|Abstract\s+[A-Z]|Introduction\s+[A-Z])", text):
             heading_text, prose_text = _split_heading_from_prose(text)
             if prose_text:
@@ -208,13 +235,12 @@ def chunk_elements(
                 continue
         split_elements.append(element)
 
-    for element in split_elements:
+    for i, element in enumerate(split_elements):
         # IMAGE
         if element.get("type") == "image":
             flush_buffer()
             emit(
-                "image",
-                "",
+                "image", "",
                 element.get("page_number"),
                 extra={
                     "image_data": element.get("base64_data"),
@@ -246,13 +272,29 @@ def chunk_elements(
             emit("citation", text, element.get("page_number"))
             continue
 
-        # HEADING
+        # DOCUMENT TITLE -- only the first qualifying element gets this treatment
+        if not title_emitted and _is_document_title(element, i):
+            flush_buffer()
+            emit("Title", text, element.get("page_number"), is_section_start=True)
+            title_emitted = True
+            continue
+
+        # METADATA (author, institution, date) -- after title is consumed,
+        # everything that looks like metadata flows into the text buffer as
+        # plain text so it renders as a normal paragraph, not a heading.
+        if _is_metadata(text):
+            # Group metadata lines together in the buffer
+            buffer_elements.append({**element, "element_type": "text"})
+            buffer_chars += len(text)
+            continue
+
+        # SECTION HEADING
         if _is_heading(element):
             flush_buffer()
             emit("heading", text, element.get("page_number"), is_section_start=True)
             continue
 
-        # PROSE -- accumulate into buffer
+        # PROSE
         if buffer_chars + len(text) > char_limit and buffer_elements:
             flush_buffer()
 
